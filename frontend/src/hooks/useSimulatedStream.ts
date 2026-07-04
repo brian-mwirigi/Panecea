@@ -42,13 +42,16 @@ export interface CommandCenterState {
   stats: DashboardStats;
   autonomous: boolean;
   running: boolean;
+  uploading: boolean;
   dataMode: DataMode;
   setAutonomous: (v: boolean) => void;
   runAgent: () => void;
   overrideDevice: (deviceId: string) => void;
+  uploadManual: (file: File) => Promise<void>;
 }
 
 const lid = () => `log_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 7)}`;
+const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
 /** Infer a log severity/colour from the streamed reasoning text. */
 function levelFromText(text: string, type?: string): LogLevel {
@@ -58,6 +61,32 @@ function levelFromText(text: string, type?: string): LogLevel {
   if (/(warn|cve|risk|vulnerab|anomal)/.test(t)) return "warn";
   if (type && type !== "reasoning") return "system";
   return "info";
+}
+
+/** Human-friendly device model + VPC slug derived from an uploaded filename. */
+function manualIdentity(filename: string): { model: string; vpc: string } {
+  const base = filename.replace(/\.[^.]+$/, "").trim();
+  const model = base.replace(/[_-]+/g, " ").replace(/\s+/g, " ").trim() || "Ingested Device";
+  const slug =
+    base.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "").slice(0, 16) ||
+    Math.random().toString(36).slice(2, 8);
+  return { model, vpc: `vpc-${slug}` };
+}
+
+/** Build a new fleet Device from an ingested manual + its Contract B policy. */
+function deviceFromManual(model: string, vpc: string, rules: FirewallRule[]): Device {
+  const allow = rules.filter((r) => r.action === "ALLOW").map((r) => r.port);
+  return {
+    id: `dev_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 6)}`,
+    model,
+    vpc_id: vpc,
+    firmware: "manual",
+    status: "secure",
+    bpm: 72,
+    ports: allow.length ? allow : rules.map((r) => r.port),
+    last_seen: Date.now(),
+    firewallRules: rules,
+  };
 }
 
 /** Map a backend Contract B payload to a UI incident memo. */
@@ -103,6 +132,7 @@ export function useSimulatedStream(): CommandCenterState {
   const [threats, setThreats] = useState<ThreatPoint[]>([]);
   const [autonomous, setAutonomous] = useState(true);
   const [running, setRunning] = useState(false);
+  const [uploading, setUploading] = useState(false);
   const [dataMode, setDataMode] = useState<DataMode>(config.useMock ? "mock" : "live");
 
   const runTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -113,7 +143,9 @@ export function useSimulatedStream(): CommandCenterState {
     devicesRef.current = devices;
   }, [devices]);
 
-  // Seed the simulated visual layer once on mount (client-side).
+  // Seed the simulated visual layer once on mount. This is intentionally
+  // client-only (Math.random / Date.now) to avoid SSR hydration mismatches.
+  /* eslint-disable react-hooks/set-state-in-effect */
   useEffect(() => {
     const initial = setTimeout(() => {
       const seededDevices = seedDevices(6);
@@ -133,6 +165,7 @@ export function useSimulatedStream(): CommandCenterState {
     }, 0);
     return () => clearTimeout(initial);
   }, []);
+  /* eslint-enable react-hooks/set-state-in-effect */
 
   const pushLogs = useCallback((incoming: AgentLogLine[]) => {
     setLogs((prev) => [...prev, ...incoming].slice(-MAX_LOG_LINES));
@@ -408,6 +441,95 @@ export function useSimulatedStream(): CommandCenterState {
     [pushLogs],
   );
 
+  // ---- Manual ingestion: drop in a device-manual PDF. The agent reads it,
+  // reasons over the WebSocket, returns Contract B, and the manual is
+  // registered as a new device in the fleet with its enforced policy.
+  const uploadManual = useCallback(
+    async (file: File) => {
+      if (uploading) return;
+      setUploading(true);
+      const { model, vpc } = manualIdentity(file.name);
+      pushLogs([
+        {
+          id: lid(),
+          ts: Date.now(),
+          level: "system",
+          text: `[INGEST] Uploading manual "${file.name}" → ${vpc}`,
+        },
+      ]);
+
+      // Mock: stream a scripted trace, then synthesize a policy + device.
+      if (config.useMock) {
+        setRunning(true);
+        const trace = agentRunTrace();
+        for (const line of trace) {
+          await sleep(420);
+          pushLogs([line]);
+        }
+        const memo = makeIncidentMemo(deviceFromManual(model, vpc, []));
+        memo.device_model = model;
+        memo.target_vpc_id = vpc;
+        const device = deviceFromManual(model, vpc, memo.firewall_rules);
+        setDevices((prev) => [device, ...prev]);
+        setMemos((m) => [memo, ...m].slice(0, MAX_MEMOS));
+        const denyBoost = memo.firewall_rules.filter((r) => r.action === "DENY").length;
+        setThreats((prev) => (prev.length ? [...prev.slice(1), nextThreatPoint(denyBoost)] : prev));
+        pushLogs([
+          {
+            id: lid(),
+            ts: Date.now(),
+            level: "success",
+            text: `[STEP 7 DONE] Manual analyzed :: ${model} registered with ${memo.firewall_rules.length} firewall rules.`,
+          },
+        ]);
+        setRunning(false);
+        setUploading(false);
+        return;
+      }
+
+      // Live: multipart POST to the backend manuals endpoint.
+      try {
+        const form = new FormData();
+        form.append("file", file);
+        form.append("vpc_id", vpc);
+        const headers: HeadersInit = {};
+        if (config.operatorToken) headers.Authorization = `Bearer ${config.operatorToken}`;
+        const res = await fetch(endpoints.manualsRun, { method: "POST", body: form, headers });
+        if (!res.ok) throw new Error(`HTTP ${res.status}`);
+        const data = (await res.json()) as ContractB;
+        const targetVpc = data.target_vpc_id || vpc;
+        const device = deviceFromManual(model, targetVpc, data.firewall_rules);
+        setDevices((prev) => [device, ...prev]);
+        const memo = memoFromContractB({ ...data, target_vpc_id: targetVpc }, [device]);
+        memo.device_model = model;
+        setMemos((m) => [memo, ...m].slice(0, MAX_MEMOS));
+        const denyBoost = data.firewall_rules.filter((r) => r.action === "DENY").length;
+        setThreats((prev) => (prev.length ? [...prev.slice(1), nextThreatPoint(denyBoost)] : prev));
+        pushLogs([
+          {
+            id: lid(),
+            ts: Date.now(),
+            level: "success",
+            text: `[STEP 7 DONE] Manual analyzed :: ${model} enforced at ${data.confidence_score}% confidence.`,
+          },
+        ]);
+      } catch (err) {
+        const msg = err instanceof Error ? err.message : "unknown error";
+        pushLogs([
+          {
+            id: lid(),
+            ts: Date.now(),
+            level: "warn",
+            text: `[INGEST] Manual ingestion failed (${msg}) :: backend /manuals/run may not be deployed yet.`,
+          },
+        ]);
+      } finally {
+        setUploading(false);
+      }
+    },
+    [uploading, pushLogs],
+  );
+
   const stats = useMemo<DashboardStats>(() => {
     const activeRules = memos.reduce((sum, m) => sum + m.firewall_rules.length, 0);
     const threatsBlocked = threats.reduce((sum, p) => sum + p.blocked, 0);
@@ -432,9 +554,11 @@ export function useSimulatedStream(): CommandCenterState {
     stats,
     autonomous,
     running,
+    uploading,
     dataMode,
     setAutonomous,
     runAgent,
     overrideDevice,
+    uploadManual,
   };
 }

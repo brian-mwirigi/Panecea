@@ -64,19 +64,19 @@ function MemoCard({ memo }: { memo: IncidentMemoType }) {
       animate={{ opacity: 1, y: 0, scale: 1 }}
       exit={{ opacity: 0, scale: 0.98 }}
       transition={{ duration: 0.3 }}
-      className="rounded-xl bg-white/[0.03] p-3.5 ring-1 ring-white/10"
+      className="rounded-xl bg-surface-2 p-3.5 ring-1 ring-hairline"
     >
       <div className="flex items-start justify-between gap-3">
         <div>
           <div className="flex items-center gap-2">
-            <span className="text-sm font-semibold text-white/90">
+            <span className="text-sm font-medium text-foreground">
               {memo.device_model}
             </span>
-            <span className="rounded bg-white/5 px-1.5 py-0.5 font-mono text-[10px] text-white/45 ring-1 ring-white/10">
+            <span className="rounded bg-surface-3 px-1.5 py-0.5 font-mono text-[10px] text-muted ring-1 ring-hairline">
               {memo.target_vpc_id}
             </span>
           </div>
-          <span className="text-[11px] text-white/35">
+          <span className="font-mono text-[11px] text-faint">
             {new Date(memo.created_at).toLocaleTimeString([], {
               hour: "2-digit",
               minute: "2-digit",
@@ -107,7 +107,7 @@ function MemoCard({ memo }: { memo: IncidentMemoType }) {
       </div>
 
       <p
-        className={`mt-3 text-[12px] leading-relaxed text-white/55 ${
+        className={`mt-3 text-[12px] leading-relaxed text-muted ${
           expanded ? "" : "line-clamp-3"
         }`}
       >
@@ -116,7 +116,7 @@ function MemoCard({ memo }: { memo: IncidentMemoType }) {
       {isLong && (
         <button
           onClick={() => setExpanded((v) => !v)}
-          className="mt-1 text-[11px] font-medium text-accent/80 transition hover:text-accent"
+          className="mt-1 text-[11px] font-medium text-accent transition hover:text-foreground"
         >
           {expanded ? "Show less" : "Show more"}
         </button>
@@ -133,14 +133,14 @@ function MemoCard({ memo }: { memo: IncidentMemoType }) {
 }
 
 function ConfidenceGauge({ score }: { score: number }) {
-  const tone = score >= 95 ? "#34d399" : score >= 90 ? "#22d3ee" : "#fbbf24";
+  const tone = score >= 95 ? "#3ecf8e" : score >= 90 ? "#5b6cff" : "#f5b544";
   const r = 16;
   const c = 2 * Math.PI * r;
   const dash = (score / 100) * c;
   return (
     <div className="relative grid h-12 w-12 shrink-0 place-items-center">
       <svg viewBox="0 0 40 40" className="h-12 w-12 -rotate-90">
-        <circle cx="20" cy="20" r={r} fill="none" stroke="rgba(255,255,255,0.08)" strokeWidth="4" />
+        <circle cx="20" cy="20" r={r} fill="none" stroke="rgba(255,255,255,0.1)" strokeWidth="4" />
         <circle
           cx="20"
           cy="20"
@@ -152,7 +152,7 @@ function ConfidenceGauge({ score }: { score: number }) {
           strokeDasharray={`${dash} ${c}`}
         />
       </svg>
-      <span className="absolute font-mono text-[11px] font-semibold text-white/85">
+      <span className="absolute font-mono text-[11px] font-semibold text-foreground">
         {score}
       </span>
     </div>

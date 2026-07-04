@@ -20,6 +20,11 @@ export const config = {
   wsUrl:
     process.env.NEXT_PUBLIC_WS_URL ?? "ws://localhost:8000/ws/agent-stream",
 
+  /**
+   * Optional operator bearer token for privileged endpoints (manual ingestion).
+   * Only required when the backend runs in strict/OIDC mode; blank otherwise.
+   */
+  operatorToken: process.env.NEXT_PUBLIC_OPERATOR_TOKEN ?? "",
   /** Real Vultr VPC targeted by the demo agent. */
   vpcId: process.env.NEXT_PUBLIC_VPC_ID ?? "vpc-medical-01",
 } as const;
@@ -32,6 +37,8 @@ export const config = {
  */
 export const endpoints = {
   agentRun: "/backend/api/v1/agent/run",
+  /** Multipart PDF manual ingestion (file + vpc_id) → streams + returns Contract B. */
+  manualsRun: "/backend/api/v1/manuals/run",
   policy: (deviceId: string) => `/backend/api/v1/policy/${deviceId}`,
   agentStream: config.wsUrl,
 } as const;

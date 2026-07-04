@@ -35,18 +35,18 @@ export function HeartbeatMonitor({ devices }: HeartbeatMonitorProps) {
           )
         }
       />
-      <div className="relative flex-1 px-3 pb-3">
-        <div className="grid-overlay relative h-full min-h-44 overflow-hidden rounded-xl bg-black/30 ring-1 ring-white/5">
+      <div className="relative flex-1 p-3">
+        <div className="grid-overlay recessed relative h-full min-h-44 overflow-hidden rounded-xl">
           <Ecg bpm={bpm} tone={tone} />
           <div className="pointer-events-none absolute left-4 top-3">
-            <div className="text-[10px] uppercase tracking-widest text-white/40">
-              {active?.model ?? "—"}
+            <div className="section-label">{active?.model ?? "—"}</div>
+            <div className="mt-0.5 font-mono text-[10px] text-faint">
+              {active?.vpc_id ?? ""}
             </div>
-            <div className="text-[10px] text-white/30">{active?.vpc_id ?? ""}</div>
           </div>
           <div className="pointer-events-none absolute bottom-3 right-4 flex items-end gap-1">
             <span
-              className={`font-mono text-3xl font-bold tabular-nums ${
+              className={`text-3xl font-semibold tabular-nums ${
                 tone === "danger"
                   ? "text-danger"
                   : tone === "warn"
@@ -56,7 +56,7 @@ export function HeartbeatMonitor({ devices }: HeartbeatMonitorProps) {
             >
               {bpm}
             </span>
-            <span className="pb-1 text-xs text-white/40">BPM</span>
+            <span className="section-label pb-1">BPM</span>
           </div>
         </div>
       </div>
@@ -67,7 +67,7 @@ export function HeartbeatMonitor({ devices }: HeartbeatMonitorProps) {
 function Ecg({ bpm, tone }: { bpm: number; tone: string }) {
   const samples = useHeartbeat({ bpm, window: 200, intervalMs: 40 });
   const stroke =
-    tone === "danger" ? "#fb7185" : tone === "warn" ? "#fbbf24" : "#34d399";
+    tone === "danger" ? "#fb7185" : tone === "warn" ? "#f5b544" : "#3ecf8e";
 
   const points = useMemo(() => {
     const w = 1000;
@@ -129,15 +129,15 @@ function DeviceSelect({
       <select
         value={value}
         onChange={(e) => onChange(e.target.value)}
-        className="appearance-none rounded-lg bg-white/5 py-1.5 pl-3 pr-8 text-xs text-white/70 ring-1 ring-white/10 outline-none transition hover:bg-white/10 focus:ring-accent/40"
+        className="appearance-none rounded-lg bg-surface-2 py-1.5 pl-3 pr-8 text-xs text-muted ring-1 ring-hairline outline-none transition hover:text-foreground focus:ring-accent/50"
       >
         {devices.map((d) => (
-          <option key={d.id} value={d.id} className="bg-[#0b1020] text-white">
+          <option key={d.id} value={d.id} className="bg-surface text-foreground">
             {d.model}
           </option>
         ))}
       </select>
-      <ChevronDown className="pointer-events-none absolute right-2 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-white/40" />
+      <ChevronDown className="pointer-events-none absolute right-2 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-faint" />
     </div>
   );
 }

@@ -31,11 +31,11 @@ export function ThreatChart({ data }: ThreatChartProps) {
           <AreaChart data={data} margin={{ top: 8, right: 10, left: -18, bottom: 0 }}>
             <defs>
               <linearGradient id="gAllowed" x1="0" y1="0" x2="0" y2="1">
-                <stop offset="0%" stopColor="#22d3ee" stopOpacity={0.5} />
-                <stop offset="100%" stopColor="#22d3ee" stopOpacity={0} />
+                <stop offset="0%" stopColor="#5b6cff" stopOpacity={0.45} />
+                <stop offset="100%" stopColor="#5b6cff" stopOpacity={0} />
               </linearGradient>
               <linearGradient id="gBlocked" x1="0" y1="0" x2="0" y2="1">
-                <stop offset="0%" stopColor="#fb7185" stopOpacity={0.5} />
+                <stop offset="0%" stopColor="#fb7185" stopOpacity={0.45} />
                 <stop offset="100%" stopColor="#fb7185" stopOpacity={0} />
               </linearGradient>
             </defs>
@@ -55,10 +55,9 @@ export function ThreatChart({ data }: ThreatChartProps) {
             />
             <Tooltip
               contentStyle={{
-                background: "rgba(10,14,26,0.9)",
-                border: "1px solid rgba(255,255,255,0.12)",
-                borderRadius: 12,
-                backdropFilter: "blur(8px)",
+                background: "#181818",
+                border: "1px solid rgba(255,255,255,0.14)",
+                borderRadius: 10,
                 fontSize: 12,
               }}
               labelStyle={{ color: "rgba(255,255,255,0.6)" }}
@@ -67,7 +66,7 @@ export function ThreatChart({ data }: ThreatChartProps) {
             <Area
               type="monotone"
               dataKey="allowed"
-              stroke="#22d3ee"
+              stroke="#5b6cff"
               strokeWidth={2}
               fill="url(#gAllowed)"
               name="Allowed"
@@ -91,7 +90,7 @@ export function ThreatChart({ data }: ThreatChartProps) {
 
 function Legend() {
   return (
-    <div className="flex items-center gap-3 text-[11px] text-white/50">
+    <div className="flex items-center gap-3 text-[11px] text-muted">
       <span className="flex items-center gap-1.5">
         <span className="h-2 w-2 rounded-full bg-accent" /> Allowed
       </span>

@@ -33,15 +33,15 @@ export function StatsRow({ stats }: { stats: DashboardStats }) {
       {STATS.map((def, i) => {
         const Icon = def.icon;
         return (
-          <GlassCard key={def.key} interactive delay={0.05 * i} className="p-4">
+          <GlassCard key={def.key} interactive delay={0.04 * i} className="p-4">
             <div className="flex items-center justify-between">
-              <span className="text-xs font-medium text-white/45">{def.label}</span>
-              <Icon className="h-4 w-4 text-white/35" />
+              <span className="section-label">{def.label}</span>
+              <Icon className="h-4 w-4 text-faint" />
             </div>
             <div className="mt-3 flex items-end gap-1">
               <AnimatedNumber value={stats[def.key]} />
               {def.suffix && (
-                <span className="pb-1 text-sm font-medium text-white/40">{def.suffix}</span>
+                <span className="pb-1 text-sm font-medium text-faint">{def.suffix}</span>
               )}
             </div>
           </GlassCard>
@@ -56,10 +56,10 @@ function AnimatedNumber({ value }: { value: number }) {
   return (
     <motion.span
       key={value}
-      initial={{ opacity: 0.4, y: 4 }}
+      initial={{ opacity: 0.4, y: 3 }}
       animate={{ opacity: 1, y: 0 }}
       transition={{ duration: 0.35 }}
-      className="font-mono text-2xl font-semibold tabular-nums text-white"
+      className="text-[26px] font-semibold tracking-tight tabular-nums text-foreground"
     >
       {value}
     </motion.span>
