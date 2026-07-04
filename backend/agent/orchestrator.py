@@ -525,21 +525,26 @@ def _build_memo(
         f"All ports blocked except manufacturer-approved data channels."
     )
 
+    # Map extracted port -> manual reason (carries page refs like "(p.29)")
+    port_reasons = {p.port: p.reason for p in contract_a.allowed_ports}
+
     # Per-rule citations grounded in retrieved evidence where possible
     citation_lines = []
     for rule in contract_b.firewall_rules:
         port_str = str(rule.port)
         if rule.action == "ALLOW":
-            # Look for a manual passage mentioning this port
+            # 1st choice: a manual passage from RAG evidence mentioning this port
+            justification = ""
             if port_str in all_evidence:
-                # Extract the sentence containing the port number from evidence
                 for sentence in all_evidence.replace("\n", " ").split("."):
                     if port_str in sentence and len(sentence.strip()) > 10:
                         justification = sentence.strip()[:160]
                         break
-                else:
-                    justification = f"Required by device manual for {contract_a.device_model} operation"
-            else:
+            # 2nd choice: the extracted Contract A reason (carries the page ref)
+            if not justification and rule.port in port_reasons:
+                justification = f"Device manual — {port_reasons[rule.port]}"
+            # Fallback
+            if not justification:
                 justification = f"Required by device manual for {contract_a.device_model} operation"
         else:
             if rule.port == 22:
