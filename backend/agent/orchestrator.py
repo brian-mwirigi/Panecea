@@ -132,7 +132,9 @@ async def run_pipeline(
     )
 
     # Count reasoning characters to derive real confidence from deliberation depth.
+    # Also capture evidence returned by tool calls so the memo can cite it.
     reasoning_chars = 0
+    tool_evidence: dict[str, str] = {"cve": "", "retrieved": ""}
 
     async def _on_token_counted(token: StreamToken) -> None:
         nonlocal reasoning_chars
@@ -141,10 +143,18 @@ async def run_pipeline(
         if on_token:
             await on_token(token)
 
+    async def _tool_executor_capturing(tool_name: str, arguments: dict) -> str:
+        result = await _tool_executor(tool_name, arguments)
+        if tool_name == "check_cve":
+            tool_evidence["cve"] = result
+        elif tool_name == "retrieve_document":
+            tool_evidence["retrieved"] += ("\n" + result if tool_evidence["retrieved"] else result)
+        return result
+
     final_message = await run_agentic_loop(
         messages=messages,
         tools=TOOLS,
-        tool_executor=_tool_executor,
+        tool_executor=_tool_executor_capturing,
         on_token=_on_token_counted,
     )
 
@@ -166,13 +176,20 @@ async def run_pipeline(
         )
 
     # ------------------------------------------------------------------
-    # Feature 1: Real confidence score from reasoning depth.
-    # Short decisive reasoning → high confidence; long deliberation → lower.
+    # Feature 1: Real confidence from reasoning depth AND evidence grounding.
+    # Short decisive reasoning + every rule backed by evidence → high confidence.
+    # Long deliberation or rules with no supporting document → lower.
     # ------------------------------------------------------------------
-    real_confidence = _confidence_from_reasoning(
-        reasoning_chars, contract_b.cve_flagged, len(contract_b.firewall_rules)
+    combined_evidence = "\n".join(
+        part for part in (retrieved_context, tool_evidence["retrieved"], tool_evidence["cve"]) if part
     )
-    confidence_explanation = _confidence_explanation(reasoning_chars, contract_b.cve_flagged)
+    grounded, total = _evidence_coverage(contract_b, combined_evidence)
+    real_confidence = _confidence_from_reasoning(
+        reasoning_chars, contract_b.cve_flagged, len(contract_b.firewall_rules), grounded, total
+    )
+    confidence_explanation = _confidence_explanation(
+        reasoning_chars, contract_b.cve_flagged, grounded, total
+    )
     contract_b = contract_b.model_copy(update={"confidence_score": real_confidence})
     await _emit(f"\n[CONFIDENCE] {real_confidence}% — {confidence_explanation}\n")
 
@@ -191,8 +208,12 @@ async def run_pipeline(
     # ------------------------------------------------------------------
     # Step 7: Expand the incident memo for Oleh's frontend
     # ------------------------------------------------------------------
-    await _emit("\n[STEP 7] Generating incident memo...\n")
-    memo = await complete(incident_memo_prompt(contract_b.model_dump()))
+    await _emit("\n[STEP 7] Generating incident memo with citation trail...\n")
+    memo = await complete(incident_memo_prompt(
+        contract_b.model_dump(),
+        retrieved_context="\n".join(p for p in (retrieved_context, tool_evidence["retrieved"]) if p),
+        cve_evidence=tool_evidence["cve"],
+    ))
     contract_b.memo_text = memo.strip()
     await _emit("\n[STEP 7 DONE] Memo ready.\n", "content")
 
@@ -309,10 +330,32 @@ async def retract_policy(device_id: str) -> dict:
     return parsed
 
 
-def _confidence_from_reasoning(reasoning_chars: int, cve_flagged: str, rule_count: int) -> int:
+def _evidence_coverage(contract_b: "ContractB", evidence: str) -> tuple[int, int]:
     """
-    Derives a real confidence score from reasoning depth.
-    Short decisive reasoning = high confidence; long deliberation = lower confidence.
+    Counts how many firewall rules are grounded in the retrieved evidence
+    (the rule's port number appears in the manual/CVE text) vs left unexplained.
+    Mirrors the PS finance example: confidence reflects matched-to-cause coverage.
+    """
+    total = len(contract_b.firewall_rules)
+    if total == 0 or not evidence:
+        return 0, total
+    grounded = sum(1 for r in contract_b.firewall_rules if str(r.port) in evidence)
+    return grounded, total
+
+
+def _confidence_from_reasoning(
+    reasoning_chars: int,
+    cve_flagged: str,
+    rule_count: int,
+    grounded: int = 0,
+    total: int = 0,
+) -> int:
+    """
+    Derives a real confidence score from reasoning depth AND evidence grounding.
+    Short decisive reasoning = high confidence; long deliberation = lower.
+    Evidence coverage (grounded/total rules) then scales the score — a decision
+    where every rule is backed by a cited document scores higher than one with
+    unexplained rules.
     """
     if reasoning_chars < 300:
         base = 93
@@ -330,10 +373,20 @@ def _confidence_from_reasoning(reasoning_chars: int, cve_flagged: str, rule_coun
     if rule_count == 0:
         base -= 15  # no rules produced = uncertain outcome
 
+    # Evidence grounding: penalise proportionally for unexplained rules (max -25).
+    if total > 0:
+        coverage = grounded / total
+        base -= int((1 - coverage) * 25)
+
     return max(10, min(98, base))
 
 
-def _confidence_explanation(reasoning_chars: int, cve_flagged: str) -> str:
+def _confidence_explanation(
+    reasoning_chars: int,
+    cve_flagged: str,
+    grounded: int = 0,
+    total: int = 0,
+) -> str:
     """Human-readable rationale for the confidence score, shown in the memo."""
     if reasoning_chars < 300:
         depth = "short decisive reasoning — no ambiguity detected"
@@ -344,8 +397,9 @@ def _confidence_explanation(reasoning_chars: int, cve_flagged: str) -> str:
     else:
         depth = "long deliberation — significant uncertainty or conflicting CVE evidence"
 
-    cve_note = f"; CVE evidence introduced additional uncertainty" if (cve_flagged and cve_flagged not in ("NONE", "")) else ""
-    return f"{depth}{cve_note}"
+    cve_note = "; CVE evidence introduced additional uncertainty" if (cve_flagged and cve_flagged not in ("NONE", "")) else ""
+    grounding_note = f"; {grounded}/{total} rules grounded in cited evidence" if total > 0 else ""
+    return f"{depth}{cve_note}{grounding_note}"
 
 
 def _detect_drift(device_model: str, new_policy: "ContractB") -> str | None:
