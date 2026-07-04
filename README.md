@@ -65,7 +65,7 @@ It is formatted specifically to give an AI coding assistant the exact architectu
 
 ---
 
-# PANACEA v2: AI Coding Agent Master Context
+# PANACEA 
 
 ## Project Overview
 
