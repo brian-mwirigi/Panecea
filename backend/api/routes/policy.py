@@ -3,20 +3,22 @@
 import sys
 from pathlib import Path
 
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, Depends, HTTPException
 
 BACKEND_ROOT = Path(__file__).resolve().parent.parent.parent
 if str(BACKEND_ROOT) not in sys.path:
     sys.path.insert(0, str(BACKEND_ROOT))
 
 from agent.orchestrator import retract_policy
+from api.auth import require_operator
 from api.websocket import broadcast
+from services.vultr_events import publish_event
 
 router = APIRouter()
 
 
 @router.delete("/api/v1/policy/{device_id}")
-async def human_override(device_id: str):
+async def human_override(device_id: str, operator_id: str = Depends(require_operator)):
     """
     Human Override — immediately retracts the active firewall policy for a device.
     Called by Oleh's frontend when the operator flags a false positive.
@@ -35,6 +37,11 @@ async def human_override(device_id: str):
             "type": "content",
             "text": f"[HUMAN OVERRIDE] Policy retracted for device '{device_id}'. Firewall rules removed from {result.get('vpc_id', 'unknown VPC')}.",
         })
+        await publish_event(
+            "policy.revoked",
+            device_id,
+            {"device_id": device_id, "operator_id": operator_id, "result": result},
+        )
 
         return result
 

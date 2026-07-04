@@ -13,6 +13,6 @@ class FirewallRule(BaseModel):
 class ContractB(BaseModel):
     target_vpc_id: str
     firewall_rules: list[FirewallRule]
-    confidence_score: int
+    confidence_score: int = Field(ge=0, le=100)
     cve_flagged: str
     memo_text: str
