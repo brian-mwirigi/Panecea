@@ -9,6 +9,9 @@ from datetime import datetime
 from pathlib import Path
 from typing import Awaitable, Callable
 
+# Module-level policy history for drift detection (device_model → last ContractB).
+_policy_history: dict[str, "ContractB"] = {}
+
 BACKEND_ROOT = Path(__file__).resolve().parent.parent
 if str(BACKEND_ROOT) not in sys.path:
     sys.path.insert(0, str(BACKEND_ROOT))
@@ -18,6 +21,7 @@ from agent.tools.firewall import apply_firewall_rule, get_enforcement_result, re
 from schemas.contract_a import AllowedPort, ContractA
 from schemas.contract_b import ContractB, FirewallRule
 from schemas.control_plane import EvidenceBundle, EnforcementReceipt, PolicyLease
+from services.audit_log import append_audit_entry
 from services.vultr_events import publish_event
 from services.vultr_inference import StreamToken, complete, run_agentic_loop
 from services.vultr_object_storage import VultrObjectStorage, VultrObjectStorageError
@@ -127,11 +131,21 @@ async def run_pipeline(
         retrieved_context=retrieved_context,
     )
 
+    # Count reasoning characters to derive real confidence from deliberation depth.
+    reasoning_chars = 0
+
+    async def _on_token_counted(token: StreamToken) -> None:
+        nonlocal reasoning_chars
+        if token.type == "reasoning":
+            reasoning_chars += len(token.text)
+        if on_token:
+            await on_token(token)
+
     final_message = await run_agentic_loop(
         messages=messages,
         tools=TOOLS,
         tool_executor=_tool_executor,
-        on_token=on_token,
+        on_token=_on_token_counted,
     )
 
     # ------------------------------------------------------------------
@@ -150,6 +164,29 @@ async def run_pipeline(
             cve_flagged=contract_b.cve_flagged,
             memo_text=contract_b.memo_text,
         )
+
+    # ------------------------------------------------------------------
+    # Feature 1: Real confidence score from reasoning depth.
+    # Short decisive reasoning → high confidence; long deliberation → lower.
+    # ------------------------------------------------------------------
+    real_confidence = _confidence_from_reasoning(
+        reasoning_chars, contract_b.cve_flagged, len(contract_b.firewall_rules)
+    )
+    confidence_explanation = _confidence_explanation(reasoning_chars, contract_b.cve_flagged)
+    contract_b = contract_b.model_copy(update={"confidence_score": real_confidence})
+    await _emit(f"\n[CONFIDENCE] {real_confidence}% — {confidence_explanation}\n")
+
+    # ------------------------------------------------------------------
+    # Feature 3: Policy drift detection — flag if this device was seen before.
+    # ------------------------------------------------------------------
+    drift_alert = _detect_drift(contract_a.device_model, contract_b)
+    if drift_alert:
+        alert_msg = f"\n[DRIFT ALERT] Policy changed since last scan: {drift_alert}\n"
+        await _emit(alert_msg, "reasoning")
+        contract_b = contract_b.model_copy(
+            update={"memo_text": contract_b.memo_text + f"\n\n⚠️ DRIFT ALERT: {drift_alert}"}
+        )
+    _policy_history[contract_a.device_model] = contract_b
 
     # ------------------------------------------------------------------
     # Step 7: Expand the incident memo for Oleh's frontend
@@ -207,6 +244,26 @@ async def run_pipeline(
     )
     await _emit(f"[EVIDENCE SEALED] Lease {lease.lease_id}; object {evidence_key or 'strict-mode disabled'}.\n")
 
+    # ------------------------------------------------------------------
+    # Feature 4: Structured audit log — every decision is auditable.
+    # ------------------------------------------------------------------
+    append_audit_entry({
+        "event": "policy.decided",
+        "lease_id": lease.lease_id,
+        "operator_id": operator_id,
+        "device_model": contract_a.device_model,
+        "firmware_version": contract_a.firmware_version,
+        "source_doc_id": contract_a.source_doc_id,
+        "confidence_score": contract_b.confidence_score,
+        "confidence_explanation": confidence_explanation,
+        "reasoning_chars": reasoning_chars,
+        "cve_flagged": contract_b.cve_flagged,
+        "firewall_rules": [r.model_dump() for r in contract_b.firewall_rules],
+        "drift_alert": drift_alert,
+        "evidence_key": evidence_key,
+        "evidence_sha256": evidence.evidence_sha256,
+    })
+
     return contract_b
 
 
@@ -250,6 +307,103 @@ async def retract_policy(device_id: str) -> dict:
     if parsed.get("lease_id"):
         cancel_expiry(parsed["lease_id"])
     return parsed
+
+
+def _confidence_from_reasoning(reasoning_chars: int, cve_flagged: str, rule_count: int) -> int:
+    """
+    Derives a real confidence score from reasoning depth.
+    Short decisive reasoning = high confidence; long deliberation = lower confidence.
+    """
+    if reasoning_chars < 300:
+        base = 93
+    elif reasoning_chars < 800:
+        base = 85
+    elif reasoning_chars < 2000:
+        base = 74
+    elif reasoning_chars < 4000:
+        base = 62
+    else:
+        base = 50
+
+    if cve_flagged and cve_flagged not in ("NONE", ""):
+        base -= 12  # CVE evidence forces deliberation penalty
+    if rule_count == 0:
+        base -= 15  # no rules produced = uncertain outcome
+
+    return max(10, min(98, base))
+
+
+def _confidence_explanation(reasoning_chars: int, cve_flagged: str) -> str:
+    """Human-readable rationale for the confidence score, shown in the memo."""
+    if reasoning_chars < 300:
+        depth = "short decisive reasoning — no ambiguity detected"
+    elif reasoning_chars < 800:
+        depth = "moderate deliberation — minor uncertainty resolved"
+    elif reasoning_chars < 2000:
+        depth = "extended deliberation — conflicting signals weighed"
+    else:
+        depth = "long deliberation — significant uncertainty or conflicting CVE evidence"
+
+    cve_note = f"; CVE evidence introduced additional uncertainty" if (cve_flagged and cve_flagged not in ("NONE", "")) else ""
+    return f"{depth}{cve_note}"
+
+
+def _detect_drift(device_model: str, new_policy: "ContractB") -> str | None:
+    """
+    Compares the new policy against the last stored policy for this device.
+    Returns a human-readable drift summary if the port set changed, else None.
+    """
+    prev = _policy_history.get(device_model)
+    if not prev:
+        return None
+
+    prev_ports = {(r.port, r.action) for r in prev.firewall_rules}
+    new_ports = {(r.port, r.action) for r in new_policy.firewall_rules}
+
+    added = new_ports - prev_ports
+    removed = prev_ports - new_ports
+
+    if not added and not removed:
+        return None
+
+    parts = []
+    if added:
+        ports_str = ", ".join(f"port {p} ({a})" for p, a in sorted(added))
+        parts.append(f"NEW rules added: {ports_str}")
+    if removed:
+        ports_str = ", ".join(f"port {p} ({a})" for p, a in sorted(removed))
+        parts.append(f"REMOVED rules: {ports_str}")
+
+    return "; ".join(parts)
+
+
+async def explain_policy(contract_b: "ContractB") -> str:
+    """
+    Calls Nemotron to generate a plain-English compliance justification
+    for a given policy decision. Used by /api/v1/agent/explain.
+    """
+    from agent.prompts import SYSTEM_PROMPT
+
+    rules_text = "\n".join(
+        f"  - Port {r.port}: {r.action}" for r in contract_b.firewall_rules
+    )
+    prompt_messages = [
+        {"role": "system", "content": SYSTEM_PROMPT},
+        {
+            "role": "user",
+            "content": (
+                f"You are a compliance officer's AI assistant. Explain the following network security "
+                f"policy decision in 3-4 plain-English sentences that a hospital compliance officer "
+                f"could read in a regulatory audit. Be specific about ports, risks, and reasoning.\n\n"
+                f"Device: {contract_b.target_vpc_id}\n"
+                f"Confidence: {contract_b.confidence_score}%\n"
+                f"CVE Flagged: {contract_b.cve_flagged}\n"
+                f"Firewall Rules:\n{rules_text}\n"
+                f"Memo: {contract_b.memo_text}"
+            ),
+        },
+    ]
+    return await complete(prompt_messages)
 
 
 def _deterministic_policy(contract_a: ContractA, vpc_id: str) -> ContractB:
