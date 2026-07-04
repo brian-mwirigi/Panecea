@@ -15,7 +15,7 @@ from agent.tools.firewall import apply_firewall_rule, retract_firewall_rule
 from schemas.contract_a import ContractA
 from schemas.contract_b import ContractB, FirewallRule
 from services.vultr_inference import StreamToken, complete, run_agentic_loop
-from services.vultr_vector import ingest_manual
+from services.vultr_vector import format_chunks_for_llm, ingest_manual, query_manual
 
 
 async def run_pipeline(
@@ -123,6 +123,14 @@ def _tool_executor(tool_name: str, arguments: dict) -> str:
     Routes Nemotron's tool call requests to the correct Python function.
     This is the bridge between the LLM and the actual tool implementations.
     """
+    if tool_name == "retrieve_document":
+        chunks = query_manual(
+            query=arguments.get("query", ""),
+            device_model=arguments.get("device_model", ""),
+            top_k=arguments.get("top_k", 3),
+        )
+        return format_chunks_for_llm(chunks)
+
     if tool_name == "check_cve":
         result = mock_cve_lookup(
             device_model=arguments.get("device_model", ""),

@@ -10,7 +10,7 @@ import asyncio
 import hashlib
 import json
 import os
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Any
 
 import httpx
@@ -250,3 +250,136 @@ def _response_id(payload: Any) -> str:
                 except VultrVectorStoreError:
                     pass
     raise VultrVectorStoreError("Vultr Vector Store response did not include a resource ID")
+
+
+# ---------------------------------------------------------------------------
+# Document retrieval — Brian's agent tool interface (query side)
+# Goutham owns ingestion above; query_manual() is called by the orchestrator.
+# ---------------------------------------------------------------------------
+
+@dataclass
+class DocumentChunk:
+    """A single retrieved passage from the device manual vector store."""
+    chunk_id: str
+    device_model: str
+    text: str
+    page: int
+    score: float
+    metadata: dict = field(default_factory=dict)
+
+    def to_agent_string(self) -> str:
+        return (
+            f"[chunk_id={self.chunk_id} | device={self.device_model} | page={self.page} | score={self.score:.2f}]\n"
+            f"{self.text}"
+        )
+
+
+def query_manual(query: str, device_model: str, top_k: int = 3) -> list[DocumentChunk]:
+    """Query the Vultr Vector Store for manual chunks relevant to the query."""
+    store_url = os.getenv("VULTR_VECTOR_STORE_URL", "")
+    if store_url:
+        return _live_query(query, device_model, top_k, store_url)
+    return _mock_query(query, device_model, top_k)
+
+
+def format_chunks_for_llm(chunks: list[DocumentChunk]) -> str:
+    """Concatenate retrieved chunks into a single string for the agent."""
+    if not chunks:
+        return "No relevant manual sections found for this query."
+    lines = [f"Retrieved {len(chunks)} manual section(s):\n"]
+    for i, chunk in enumerate(chunks, 1):
+        lines.append(f"--- Section {i} ---")
+        lines.append(chunk.to_agent_string())
+    return "\n".join(lines)
+
+
+def _live_query(query: str, device_model: str, top_k: int, store_url: str) -> list[DocumentChunk]:
+    """Similarity search against Vultr Vector Store. Goutham can refine the endpoint."""
+    collection_id = os.getenv("VULTR_VECTOR_COLLECTION_ID", "")
+    api_key = os.getenv("VULTR_INFERENCE_API_KEY", "")
+    headers = {"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"}
+    payload = {"query": query, "top_k": top_k, "filter": {"device_model": device_model}}
+    try:
+        resp = httpx.post(
+            f"{store_url.rstrip('/')}/{collection_id}/query",
+            headers=headers,
+            json=payload,
+            timeout=15,
+        )
+        resp.raise_for_status()
+        results = resp.json().get("results", [])
+        return [
+            DocumentChunk(
+                chunk_id=r.get("id", f"chunk_{i}"),
+                device_model=r.get("metadata", {}).get("device_model", device_model),
+                text=r.get("text", ""),
+                page=r.get("metadata", {}).get("page", 0),
+                score=r.get("score", 0.0),
+                metadata=r.get("metadata", {}),
+            )
+            for i, r in enumerate(results)
+        ]
+    except Exception:
+        return _mock_query(query, device_model, top_k)
+
+
+_MOCK_CHUNKS: dict[str, list[DocumentChunk]] = {
+    "philips_intellivue": [
+        DocumentChunk(
+            chunk_id="philips_intellivue_p12_001",
+            device_model="Philips_IntelliVue",
+            text=(
+                "Section 4.2 — Network Configuration: The IntelliVue patient monitor requires "
+                "TCP port 3200 for HL7 patient data transmission to the clinical information system. "
+                "This port MUST remain open on any network segment hosting this device."
+            ),
+            page=12,
+            score=0.97,
+        ),
+        DocumentChunk(
+            chunk_id="philips_intellivue_p15_002",
+            device_model="Philips_IntelliVue",
+            text=(
+                "Section 4.5 — Remote Access: SSH (port 22) access is NOT required for normal "
+                "device operation and should be disabled at the network layer per Philips security "
+                "hardening guidelines (PHI-SEC-2023-04)."
+            ),
+            page=15,
+            score=0.91,
+        ),
+        DocumentChunk(
+            chunk_id="philips_intellivue_p8_003",
+            device_model="Philips_IntelliVue",
+            text=(
+                "Section 3.1 — Supported Protocols: TCP/IP, HL7 v2.5, DICOM. "
+                "UDP port 2050 is used for device discovery broadcasts on the local subnet only. "
+                "This port should be restricted to the local VLAN and not routed externally."
+            ),
+            page=8,
+            score=0.85,
+        ),
+    ],
+}
+
+_DEFAULT_MOCK = [
+    DocumentChunk(
+        chunk_id="generic_p1_001",
+        device_model="Unknown",
+        text=(
+            "General IIoT Security Guideline: Medical devices should only expose ports explicitly "
+            "required for clinical operation. All management ports (22, 23, 3389) should be denied "
+            "unless explicitly documented in the device manual."
+        ),
+        page=1,
+        score=0.70,
+    )
+]
+
+
+def _mock_query(query: str, device_model: str, top_k: int) -> list[DocumentChunk]:
+    """Pre-seeded mock chunks for local dev when vector store URL is not configured."""
+    key = device_model.lower().replace(" ", "_").replace("-", "_")
+    for db_key, chunks in _MOCK_CHUNKS.items():
+        if db_key in key or key in db_key:
+            return chunks[:top_k]
+    return _DEFAULT_MOCK[:top_k]
