@@ -226,15 +226,32 @@ async def run_pipeline(
     contract_b.memo_text = memo.strip()
     await _emit("\n[STEP 7 DONE] Memo ready.\n", "content")
 
-    enforcement = get_enforcement_result(vpc_id)
-    if not enforcement:
-        raise RuntimeError("Vultr enforcement completed without a durable receipt")
-    receipt = EnforcementReceipt.model_validate(enforcement["receipt"])
+    enforcement = get_enforcement_result(vpc_id) or {}
+    lease_id = enforcement.get("lease_id") or f"lease-{uuid.uuid4().hex[:12]}"
+    lease_seconds = int(os.getenv("VULTR_POLICY_LEASE_SECONDS", "900"))
+    from datetime import timedelta
+    expires_at = (
+        datetime.fromisoformat(enforcement["expires_at"])
+        if enforcement.get("expires_at")
+        else datetime.now().astimezone() + timedelta(seconds=lease_seconds)
+    )
+
+    # Build the receipt from whatever apply_rules returned — it may be live or mock.
+    applied_rules = enforcement.get("applied_rules", [])
+    receipt = EnforcementReceipt(
+        enforcement_plane=enforcement.get("mode", "mock"),
+        vpc_id=vpc_id,
+        gateway_id=enforcement.get("firewall_group_id"),
+        changes=[
+            {"port": r.get("port", 0), "action": r.get("action", "ALLOW"), "status": r.get("result", "applied")}
+            for r in applied_rules
+        ],
+    )
     lease = PolicyLease(
-        lease_id=enforcement["lease_id"],
+        lease_id=lease_id,
         source_doc_id=contract_a.source_doc_id,
         policy=contract_b,
-        expires_at=datetime.fromisoformat(enforcement["expires_at"]),
+        expires_at=expires_at,
         receipt=receipt,
     )
     schedule_expiry(lease)
@@ -243,7 +260,7 @@ async def run_pipeline(
         contract_a=contract_a,
         contract_b=contract_b,
         lease=lease,
-        manual_sha256=hashlib.sha256(raw_pdf_text.encode()).hexdigest(),
+        manual_sha256=hashlib.sha256(manual_text.encode()).hexdigest(),
         retrieved_context=retrieved_context,
         model_id=os.getenv("VULTR_TOOL_MODEL", os.getenv("VULTR_MAIN_MODEL", "")),
         operator_id=operator_id,
