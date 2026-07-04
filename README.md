@@ -279,7 +279,7 @@ PLAN:
 
 <div align="center">
 
-**PANACEA** · Built on Vultr · RAISE Summit Hackathon 2026
+**PANACEA**
 
 *Grounded in documents. Enforced on the network. Auditable end to end.*
 
