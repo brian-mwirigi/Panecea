@@ -149,7 +149,8 @@ export function useSimulatedStream(): CommandCenterState {
         const memo = makeIncidentMemo(target);
         setMemos((m) => [memo, ...m].slice(0, MAX_MEMOS));
         setDevices((prev) => applyEnforcement(prev, memo.target_vpc_id, memo.firewall_rules));
-        setThreats((prev) => (prev.length ? [...prev.slice(1), nextThreatPoint()] : prev));
+        const denyBoost = memo.firewall_rules.filter((r) => r.action === "DENY").length;
+        setThreats((prev) => (prev.length ? [...prev.slice(1), nextThreatPoint(denyBoost)] : prev));
         setRunning(false);
       },
       trace.length * 550 + 400,
@@ -159,7 +160,8 @@ export function useSimulatedStream(): CommandCenterState {
   // ---- Live agent run: POST to the backend and render the returned Contract B.
   const runAgentLive = useCallback(async () => {
     setRunning(true);
-    const vpc = config.vpcId;
+    let denyBoost = 0;
+    const vpc = devicesRef.current.find((d) => d.status !== "override")?.vpc_id ?? config.vpcId;
     pushLogs([
       { id: lid(), ts: Date.now(), level: "system", text: `Agent run requested for ${vpc}...` },
     ]);
@@ -174,6 +176,7 @@ export function useSimulatedStream(): CommandCenterState {
       const memo = memoFromContractB(data, devicesRef.current);
       setMemos((m) => [memo, ...m].slice(0, MAX_MEMOS));
       setDevices((prev) => applyEnforcement(prev, data.target_vpc_id, data.firewall_rules));
+      denyBoost = data.firewall_rules.filter((r) => r.action === "DENY").length;
       pushLogs([
         {
           id: lid(),
@@ -185,9 +188,23 @@ export function useSimulatedStream(): CommandCenterState {
     } catch (err) {
       const msg = err instanceof Error ? err.message : "unknown error";
       setDataMode("fallback");
-      pushLogs([{ id: lid(), ts: Date.now(), level: "warn", text: `Agent run failed (${msg}).` }]);
+      pushLogs([
+        {
+          id: lid(),
+          ts: Date.now(),
+          level: "warn",
+          text: `Agent run failed (${msg}) :: showing simulated decision.`,
+        },
+      ]);
+      const target = devicesRef.current.find((d) => d.status !== "override");
+      const memo = makeIncidentMemo(target);
+      setMemos((m) => [memo, ...m].slice(0, MAX_MEMOS));
+      setDevices((prev) => applyEnforcement(prev, memo.target_vpc_id, memo.firewall_rules));
+      denyBoost = memo.firewall_rules.filter((r) => r.action === "DENY").length;
     } finally {
-      setThreats((prev) => (prev.length ? [...prev.slice(1), nextThreatPoint()] : prev));
+      setThreats((prev) =>
+        prev.length ? [...prev.slice(1), nextThreatPoint(denyBoost)] : prev,
+      );
       setRunning(false);
     }
   }, [pushLogs]);

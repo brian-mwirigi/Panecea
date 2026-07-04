@@ -1,9 +1,34 @@
 "use client";
 
+import { useState } from "react";
 import { AnimatePresence, motion } from "framer-motion";
 import { FileText, ShieldAlert, CheckCircle2, XCircle } from "lucide-react";
 import { GlassCard, PanelHeader } from "./GlassCard";
 import type { IncidentMemo as IncidentMemoType } from "@/lib/types";
+
+/**
+ * The backend memo step is sometimes clean and sometimes leaks the model's raw
+ * reasoning (and a trailing "[ERROR: ...]"). Extract the well-formed
+ * THREAT/ACTION/STATUS memo when present and drop the noise so cards stay tidy.
+ */
+function cleanMemoText(raw: string): string {
+  let t = (raw || "").replace(/\[ERROR[^\]]*\]/gi, "").trim();
+  const threatIdx = t.lastIndexOf("THREAT:");
+  if (threatIdx >= 0) {
+    t = t.slice(threatIdx).trim();
+    const statusIdx = t.indexOf("STATUS:");
+    if (statusIdx >= 0) {
+      const period = t.indexOf(".", statusIdx);
+      if (period >= 0) t = t.slice(0, period + 1).trim();
+    }
+  }
+  return t || "No memo text returned.";
+}
+
+/** Only show a real CVE badge for genuine identifiers, not "NONE"/"N/A". */
+function hasRealCve(cve: string | null): cve is string {
+  return !!cve && /^CVE-/i.test(cve.trim());
+}
 
 interface IncidentMemoProps {
   memos: IncidentMemoType[];
@@ -29,6 +54,9 @@ export function IncidentMemo({ memos }: IncidentMemoProps) {
 }
 
 function MemoCard({ memo }: { memo: IncidentMemoType }) {
+  const [expanded, setExpanded] = useState(false);
+  const text = cleanMemoText(memo.memo_text);
+  const isLong = text.length > 240;
   return (
     <motion.article
       layout
@@ -78,9 +106,23 @@ function MemoCard({ memo }: { memo: IncidentMemoType }) {
         ))}
       </div>
 
-      <p className="mt-3 text-[12px] leading-relaxed text-white/55">{memo.memo_text}</p>
+      <p
+        className={`mt-3 text-[12px] leading-relaxed text-white/55 ${
+          expanded ? "" : "line-clamp-3"
+        }`}
+      >
+        {text}
+      </p>
+      {isLong && (
+        <button
+          onClick={() => setExpanded((v) => !v)}
+          className="mt-1 text-[11px] font-medium text-accent/80 transition hover:text-accent"
+        >
+          {expanded ? "Show less" : "Show more"}
+        </button>
+      )}
 
-      {memo.cve_flagged && (
+      {hasRealCve(memo.cve_flagged) && (
         <div className="mt-2.5 flex items-center gap-1.5 rounded-md bg-danger/10 px-2 py-1 text-[11px] font-medium text-danger ring-1 ring-danger/20">
           <ShieldAlert className="h-3.5 w-3.5" />
           {memo.cve_flagged}

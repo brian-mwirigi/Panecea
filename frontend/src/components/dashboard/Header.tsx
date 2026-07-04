@@ -38,7 +38,7 @@ export function Header({ autonomous, running, dataMode }: HeaderProps) {
       className="glass sweep relative flex flex-wrap items-center justify-between gap-4 rounded-2xl px-5 py-4"
     >
       <div className="flex items-center gap-4">
-        <div className="grid h-11 w-11 place-items-center rounded-xl bg-gradient-to-br from-accent/30 to-accent-3/30 ring-1 ring-white/15">
+        <div className="grid h-11 w-11 place-items-center rounded-xl bg-accent/15 ring-1 ring-white/15">
           <ShieldPlus className="h-6 w-6 text-accent" strokeWidth={2} />
         </div>
         <div>
