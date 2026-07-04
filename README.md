@@ -82,10 +82,6 @@ It is formatted specifically to give an AI coding assistant the exact architectu
 * **Infrastructure Execution:** Vultr Cloud Firewall APIs, Vultr VPCs.
 * **Frontend UI:** Next.js, React, WebSockets (for real-time agent reasoning streaming).
 
-## My Role in the Team (The Orchestrator)
-
-I am building the **Sovereign Brain (Agent Orchestration)** layer.
-Your primary job as my coding agent is to help me build the FastAPI backend that acts as the central router for the 7-step loop. We are receiving data from the Vector DB, running the LLM reasoning loop via Vultr Serverless, formatting the output, streaming logs via WebSockets to the frontend, and passing the final execution payloads to the Firewall scripts.
 
 ## The 7-Step Architectural Loop
 
@@ -130,15 +126,3 @@ Do not write any routing or parsing code that breaks these JSON schemas.
 }
 
 ```
-
-## Coding Constraints & Hackathon Guardrails
-
-When generating code for this workspace, strictly adhere to the following rules:
-
-1. **Vultr-Native Only:** Do not import or suggest AWS SDKs (`boto3`), Google Cloud, or OpenAI packages. Use standard HTTP clients (like `httpx` or `requests`) to interact with Vultr's REST APIs if official SDKs are missing.
-2. **Mocking the CVE Check:** For Step 3 (Cross-Check), do not attempt to write complex scraping logic for the National Vulnerability Database. Write a simple Python function tool (`mock_cve_lookup`) that returns a hardcoded vulnerability payload (e.g., `CVE-2023-XXXX: Philips SMB vulnerability`) based on the input string.
-3. **WebSocket Priority:** The Next.js frontend relies on seeing the agent's "thoughts" in real time. Ensure the FastAPI LangChain/LLM implementation utilizes streaming responses and pushes those tokens asynchronously to a WebSocket endpoint.
-4. **Graceful Fallbacks:** Time is critical. If a Vultr API connection times out or fails, the code should catch the exception gracefully and return a fallback JSON response so the frontend demo does not crash.
-5. **Human Override Logic:** Expose an endpoint (`DELETE /api/v1/policy/{device_id}`) that allows the frontend to send a "False Positive" signal, which immediately retracts the firewall rule.
-
----
