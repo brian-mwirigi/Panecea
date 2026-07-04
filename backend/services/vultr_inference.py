@@ -1,9 +1,10 @@
-# Vultr Serverless Inference API client. Sends prompts to the hosted LLM and returns streamed text responses via httpx.
+# Vultr Serverless Inference API client. Handles streaming, tool calling, and reasoning token forwarding.
 
 import json
 import sys
+from dataclasses import dataclass, field
 from pathlib import Path
-from typing import AsyncGenerator
+from typing import AsyncGenerator, Callable
 
 import httpx
 
@@ -27,23 +28,37 @@ HEADERS = {
 }
 
 
-def _build_payload(model: str, messages: list[dict]) -> dict:
+@dataclass
+class StreamToken:
+    """A single token emitted during streaming. type is 'reasoning' or 'content'."""
+    text: str
+    type: str = "content"
+
+
+@dataclass
+class ToolCallRequest:
+    """Nemotron wants to invoke a tool."""
+    call_id: str
+    name: str
+    arguments: dict = field(default_factory=dict)
+
+
+def _base_payload(model: str, messages: list[dict]) -> dict:
     return {
         "model": model,
         "messages": messages,
-        "stream": True,
         "max_tokens": VULTR_MAX_TOKENS,
         "temperature": VULTR_TEMPERATURE,
     }
 
 
-def _extract_token(chunk: dict) -> str:
-    delta = chunk["choices"][0]["delta"]
-    return delta.get("content") or delta.get("reasoning") or delta.get("reasoning_content") or ""
+# ---------------------------------------------------------------------------
+# Streaming (reasoning + content tokens)
+# ---------------------------------------------------------------------------
 
-
-async def _stream_model(model: str, messages: list[dict]) -> AsyncGenerator[str, None]:
-    payload = _build_payload(model, messages)
+async def _stream_raw(model: str, messages: list[dict]) -> AsyncGenerator[StreamToken, None]:
+    """Streams reasoning and content tokens from a single model, labelling each."""
+    payload = {**_base_payload(model, messages), "stream": True}
 
     async with httpx.AsyncClient(timeout=VULTR_INFERENCE_TIMEOUT) as client:
         async with client.stream(
@@ -60,49 +75,136 @@ async def _stream_model(model: str, messages: list[dict]) -> AsyncGenerator[str,
                 if data.strip() == "[DONE]":
                     break
                 try:
-                    token = _extract_token(json.loads(data))
-                    if token:
-                        yield token
+                    delta = json.loads(data)["choices"][0]["delta"]
+                    reasoning = delta.get("reasoning") or delta.get("reasoning_content") or ""
+                    content = delta.get("content") or ""
+                    if reasoning:
+                        yield StreamToken(text=reasoning, type="reasoning")
+                    if content:
+                        yield StreamToken(text=content, type="content")
                 except (json.JSONDecodeError, KeyError):
                     continue
 
 
-async def stream_completion(messages: list[dict]) -> AsyncGenerator[str, None]:
+async def stream_completion(messages: list[dict]) -> AsyncGenerator[StreamToken, None]:
     """
-    Streams reasoning tokens from Nemotron via Vultr's OpenAI-compatible endpoint.
-    Falls back to VULTR_FALLBACK_MODEL if the main model times out or errors.
+    Public streaming interface. Falls back to VULTR_FALLBACK_MODEL on timeout/error.
+    Yields StreamToken objects so callers can distinguish reasoning from content.
     """
     try:
-        async for token in _stream_model(VULTR_MAIN_MODEL, messages):
+        async for token in _stream_raw(VULTR_MAIN_MODEL, messages):
             yield token
     except httpx.TimeoutException:
-        yield f"[WARN: {VULTR_MAIN_MODEL} timed out — retrying with {VULTR_FALLBACK_MODEL}]"
+        yield StreamToken(text=f"[WARN: {VULTR_MAIN_MODEL} timed out — switching to {VULTR_FALLBACK_MODEL}]", type="reasoning")
         try:
-            async for token in _stream_model(VULTR_FALLBACK_MODEL, messages):
+            async for token in _stream_raw(VULTR_FALLBACK_MODEL, messages):
                 yield token
-        except httpx.TimeoutException:
-            yield "[ERROR: Vultr Inference timeout — falling back to cached policy]"
-        except httpx.HTTPStatusError as e:
-            yield f"[ERROR: Vultr Inference returned {e.response.status_code}]"
         except Exception as e:
-            yield f"[ERROR: {str(e)}]"
+            yield StreamToken(text=f"[ERROR: {e}]", type="reasoning")
     except httpx.HTTPStatusError as e:
-        yield f"[WARN: {VULTR_MAIN_MODEL} failed — retrying with {VULTR_FALLBACK_MODEL}]"
+        yield StreamToken(text=f"[WARN: {VULTR_MAIN_MODEL} HTTP {e.response.status_code} — switching to {VULTR_FALLBACK_MODEL}]", type="reasoning")
         try:
-            async for token in _stream_model(VULTR_FALLBACK_MODEL, messages):
+            async for token in _stream_raw(VULTR_FALLBACK_MODEL, messages):
                 yield token
-        except Exception as fallback_error:
-            yield f"[ERROR: Vultr Inference returned {e.response.status_code}; fallback failed: {fallback_error}]"
+        except Exception as fallback_err:
+            yield StreamToken(text=f"[ERROR: {fallback_err}]", type="reasoning")
     except Exception as e:
-        yield f"[ERROR: {str(e)}]"
+        yield StreamToken(text=f"[ERROR: {e}]", type="reasoning")
 
 
 async def complete(messages: list[dict]) -> str:
-    """
-    Non-streaming version. Collects the full response and returns it as a string.
-    Used for steps that need a complete JSON output before proceeding.
-    """
-    full_response = []
+    """Collects full streamed content (non-reasoning) as a single string."""
+    parts = []
     async for token in stream_completion(messages):
-        full_response.append(token)
-    return "".join(full_response)
+        if token.type == "content":
+            parts.append(token.text)
+    return "".join(parts)
+
+
+# ---------------------------------------------------------------------------
+# Agentic tool calling — Nemotron drives the loop
+# ---------------------------------------------------------------------------
+
+async def run_agentic_loop(
+    messages: list[dict],
+    tools: list[dict],
+    tool_executor: Callable[[str, dict], str],
+    on_token: Callable[[StreamToken], None] | None = None,
+) -> dict:
+    """
+    Runs Nemotron in an agentic tool-calling loop.
+
+    - tools: list of tool schemas from prompts.TOOLS
+    - tool_executor: called when Nemotron requests a tool. Receives (tool_name, arguments),
+      returns a string result to feed back to the model.
+    - on_token: optional callback for streaming reasoning/content tokens to the WebSocket.
+
+    Returns the final assistant message dict once Nemotron stops calling tools.
+    """
+    history = list(messages)
+
+    for _ in range(10):  # max 10 tool call rounds to prevent infinite loops
+        payload = {
+            **_base_payload(VULTR_MAIN_MODEL, history),
+            "tools": tools,
+            "tool_choice": "auto",
+            "stream": False,
+        }
+
+        try:
+            async with httpx.AsyncClient(timeout=VULTR_INFERENCE_TIMEOUT) as client:
+                resp = await client.post(
+                    f"{VULTR_INFERENCE_BASE_URL}/chat/completions",
+                    headers=HEADERS,
+                    json=payload,
+                )
+                resp.raise_for_status()
+                response_data = resp.json()
+        except (httpx.TimeoutException, httpx.HTTPStatusError) as e:
+            return {"role": "assistant", "content": f"[ERROR: {e}]"}
+
+        message = response_data["choices"][0]["message"]
+
+        # Stream any reasoning tokens to the WebSocket
+        reasoning = message.get("reasoning") or message.get("reasoning_content") or ""
+        if reasoning and on_token:
+            for chunk in _chunk_text(reasoning):
+                on_token(StreamToken(text=chunk, type="reasoning"))
+
+        # If no tool calls, Nemotron is done — return the final message
+        if not message.get("tool_calls"):
+            if on_token and message.get("content"):
+                for chunk in _chunk_text(message["content"]):
+                    on_token(StreamToken(text=chunk, type="content"))
+            return message
+
+        # Execute each tool Nemotron requested
+        history.append(message)
+        for tool_call in message["tool_calls"]:
+            fn = tool_call["function"]
+            tool_name = fn["name"]
+            try:
+                arguments = json.loads(fn["arguments"])
+            except json.JSONDecodeError:
+                arguments = {}
+
+            if on_token:
+                on_token(StreamToken(text=f"\n[TOOL CALL → {tool_name}({arguments})]\n", type="reasoning"))
+
+            result = tool_executor(tool_name, arguments)
+
+            if on_token:
+                on_token(StreamToken(text=f"[TOOL RESULT ← {result}]\n", type="reasoning"))
+
+            history.append({
+                "role": "tool",
+                "tool_call_id": tool_call["id"],
+                "content": str(result),
+            })
+
+    return {"role": "assistant", "content": "[ERROR: max tool call rounds exceeded]"}
+
+
+def _chunk_text(text: str, size: int = 20) -> list[str]:
+    """Split text into small chunks for realistic streaming simulation."""
+    return [text[i:i + size] for i in range(0, len(text), size)]
