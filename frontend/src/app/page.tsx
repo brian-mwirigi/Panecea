@@ -9,7 +9,6 @@ import { AgentTerminal } from "@/components/dashboard/AgentTerminal";
 import { IncidentMemo } from "@/components/dashboard/IncidentMemo";
 import { HumanOverride } from "@/components/dashboard/HumanOverride";
 import { DeviceTable } from "@/components/dashboard/DeviceTable";
-import { config } from "@/lib/config";
 
 export default function CommandCenter() {
   const {
@@ -20,6 +19,7 @@ export default function CommandCenter() {
     stats,
     autonomous,
     running,
+    dataMode,
     setAutonomous,
     runAgent,
     overrideDevice,
@@ -27,7 +27,7 @@ export default function CommandCenter() {
 
   return (
     <main className="mx-auto flex min-h-screen max-w-[1600px] flex-col gap-4 p-4 sm:p-6">
-      <Header autonomous={autonomous} running={running} />
+      <Header autonomous={autonomous} running={running} dataMode={dataMode} />
 
       <StatsRow stats={stats} />
 
@@ -54,7 +54,7 @@ export default function CommandCenter() {
       </section>
 
       <footer className="pb-2 pt-1 text-center text-[11px] text-white/25">
-        Panacea v2 · Command Center · {config.useMock ? "simulated telemetry" : "live Vultr control plane"}
+        Panacea v2 · Command Center · {dataMode === "live" ? "live Vultr control plane" : "device-twin simulation"}
       </footer>
     </main>
   );

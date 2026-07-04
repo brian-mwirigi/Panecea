@@ -22,7 +22,13 @@ from services.vultr_events import publish_event
 from services.vultr_inference import StreamToken, complete, run_agentic_loop
 from services.vultr_object_storage import VultrObjectStorage, VultrObjectStorageError
 from services.policy_leases import cancel_expiry, schedule_expiry
-from services.vultr_vector import VultrVectorStore, ingest_manual, query_cve, query_manual
+from services.vultr_vector import (
+    VultrVectorStore,
+    ingest_manual,
+    query_cve,
+    query_manual,
+    retrieve_document,
+)
 
 
 async def run_pipeline(
@@ -186,6 +192,21 @@ async def _tool_executor(tool_name: str, arguments: dict) -> str:
     Routes Nemotron's tool call requests to the correct Python function.
     This is the bridge between the LLM and the actual tool implementations.
     """
+    if tool_name == "retrieve_document":
+        chunks = query_manual(
+            query=arguments.get("query", ""),
+            device_model=arguments.get("device_model", ""),
+            top_k=arguments.get("top_k", 3),
+        )
+        return format_chunks_for_llm(chunks)
+
+    if tool_name == "retrieve_document":
+        return await retrieve_document(
+            query=arguments.get("query", ""),
+            device_model=arguments.get("device_model", ""),
+            top_k=arguments.get("top_k", 3),
+        )
+
     if tool_name == "check_cve":
         return await query_cve(
             device_model=arguments.get("device_model", ""),

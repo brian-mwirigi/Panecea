@@ -2,15 +2,17 @@
 
 import { useEffect, useState } from "react";
 import { motion } from "framer-motion";
-import { ShieldPlus, Activity } from "lucide-react";
+import { ShieldPlus, Activity, Wifi, WifiOff, FlaskConical } from "lucide-react";
+import type { DataMode } from "@/hooks/useSimulatedStream";
 
 interface HeaderProps {
   autonomous: boolean;
   running: boolean;
+  dataMode: DataMode;
 }
 
 /** Top command bar: brand, live system status and clock. */
-export function Header({ autonomous, running }: HeaderProps) {
+export function Header({ autonomous, running, dataMode }: HeaderProps) {
   const [now, setNow] = useState<string>("");
 
   useEffect(() => {
@@ -55,6 +57,25 @@ export function Header({ autonomous, running }: HeaderProps) {
       </div>
 
       <div className="flex items-center gap-3">
+        <StatusPill
+          label={
+            dataMode === "live"
+              ? "Live Backend"
+              : dataMode === "fallback"
+                ? "Backend Offline"
+                : "Simulated"
+          }
+          tone={dataMode === "live" ? "good" : dataMode === "fallback" ? "warn" : "idle"}
+          icon={
+            dataMode === "live" ? (
+              <Wifi className="h-3.5 w-3.5" />
+            ) : dataMode === "fallback" ? (
+              <WifiOff className="h-3.5 w-3.5" />
+            ) : (
+              <FlaskConical className="h-3.5 w-3.5" />
+            )
+          }
+        />
         <StatusPill
           label={autonomous ? "Autonomous" : "Manual Override"}
           tone={autonomous ? "good" : "warn"}

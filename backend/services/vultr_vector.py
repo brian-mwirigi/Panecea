@@ -294,6 +294,18 @@ async def query_cve(device_model: str, firmware_version: str) -> str:
     return await VultrVectorStore(collection_id=collection_id).rag_query(collection_id, query)
 
 
+async def retrieve_document(query: str, device_model: str, top_k: int = 3) -> str:
+    """Targeted agent-tool retrieval through Vultr's managed RAG endpoint."""
+    collection_id = os.getenv("VULTR_VECTOR_COLLECTION_ID", "")
+    if not collection_id:
+        raise VultrVectorStoreError("VULTR_VECTOR_COLLECTION_ID is required for document retrieval")
+    grounded_query = (
+        f"Return up to {top_k} exact manual passages for device {device_model} relevant to: {query}. "
+        "For each passage, include the Vultr source item identifier when available."
+    )
+    return await VultrVectorStore(collection_id=collection_id).rag_query(collection_id, grounded_query)
+
+
 def _records(payload: Any, *keys: str) -> list[dict[str, Any]]:
     if isinstance(payload, list):
         return [item for item in payload if isinstance(item, dict)]

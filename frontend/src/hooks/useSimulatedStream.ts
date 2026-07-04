@@ -1,6 +1,7 @@
 "use client";
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { config, endpoints, SAMPLE_MANUAL_TEXT } from "@/lib/config";
 import {
   agentRunTrace,
   ambientLine,
@@ -11,26 +12,27 @@ import {
   seedThreatSeries,
   tickDevice,
 } from "@/lib/simulator";
-import { config, endpoints } from "@/lib/config";
 import type {
   AgentLogLine,
+  ContractB,
   DashboardStats,
   Device,
+  FirewallRule,
   IncidentMemo,
+  LogLevel,
   ThreatPoint,
-  ContractB,
 } from "@/lib/types";
 
 const MAX_LOG_LINES = 120;
 const MAX_MEMOS = 8;
-const DEMO_MANUAL = `Philips IntelliVue patient monitor, firmware B.01.
-Network requirements: TCP port 3200 is required for HL7 patient data.
-All undocumented remote administration services, including SSH port 22 and Telnet port 23, are prohibited.`;
 
 function authHeaders(): HeadersInit {
   const token = typeof window === "undefined" ? null : sessionStorage.getItem("panacea_access_token");
   return token ? { Authorization: `Bearer ${token}` } : {};
 }
+
+/** How the terminal/memos are currently sourced. */
+export type DataMode = "mock" | "live" | "fallback";
 
 export interface CommandCenterState {
   devices: Device[];
@@ -40,16 +42,59 @@ export interface CommandCenterState {
   stats: DashboardStats;
   autonomous: boolean;
   running: boolean;
+  dataMode: DataMode;
   setAutonomous: (v: boolean) => void;
   runAgent: () => void;
   overrideDevice: (deviceId: string) => void;
 }
 
+const lid = () => `log_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 7)}`;
+
+/** Infer a log severity/colour from the streamed reasoning text. */
+function levelFromText(text: string, type?: string): LogLevel {
+  const t = text.toLowerCase();
+  if (/(deny|block|threat|attack|malicious|breach|lateral)/.test(t)) return "threat";
+  if (/(allow|success|confirmed|complete|applied|approved)/.test(t)) return "success";
+  if (/(warn|cve|risk|vulnerab|anomal)/.test(t)) return "warn";
+  if (type && type !== "reasoning") return "system";
+  return "info";
+}
+
+/** Map a backend Contract B payload to a UI incident memo. */
+function memoFromContractB(data: ContractB, devices: Device[]): IncidentMemo {
+  const match = devices.find((d) => d.vpc_id === data.target_vpc_id);
+  return {
+    ...data,
+    id: `memo_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 7)}`,
+    device_model: match?.model ?? "Philips_IntelliVue",
+    created_at: Date.now(),
+  };
+}
+
 /**
- * Central live-data source for the Command Center.
+ * Reflect an enforced Contract B policy onto the matching device so the fleet
+ * table visibly shows the lockdown (e.g. port 22 DENY / blocked, 3200 ALLOW).
+ */
+function applyEnforcement(
+  devices: Device[],
+  vpcId: string,
+  rules: FirewallRule[],
+): Device[] {
+  return devices.map((d) =>
+    d.vpc_id === vpcId
+      ? { ...d, firewallRules: rules, status: d.status === "override" ? "override" : "secure" }
+      : d,
+  );
+}
+
+/**
+ * Central data source for the Command Center.
  *
- * In mock mode it drives the simulator. In live mode it consumes the Vultr
- * backend WebSocket and REST control-plane endpoints.
+ * Device vitals, the heartbeat waveform and the threat chart are always
+ * simulated (the backend does not provide them). The agent reasoning terminal
+ * and incident memos come from the live backend when NEXT_PUBLIC_USE_MOCK is
+ * "false", with an automatic fallback to the simulator if the backend is
+ * unreachable so the demo never shows a dead screen.
  */
 export function useSimulatedStream(): CommandCenterState {
   const [devices, setDevices] = useState<Device[]>([]);
@@ -58,123 +103,195 @@ export function useSimulatedStream(): CommandCenterState {
   const [threats, setThreats] = useState<ThreatPoint[]>([]);
   const [autonomous, setAutonomous] = useState(true);
   const [running, setRunning] = useState(false);
-  const runTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
-  const pushLogs = useCallback((incoming: AgentLogLine[]) => {
-    setLogs((prev) => [...prev, ...incoming].slice(-MAX_LOG_LINES));
-  }, []);
+  const [dataMode, setDataMode] = useState<DataMode>(config.useMock ? "mock" : "live");
 
-  // Seed initial state once on mount (client-side to avoid hydration drift).
+  const runTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const devicesRef = useRef<Device[]>([]);
+  const wsConnectedRef = useRef(false);
+
+  useEffect(() => {
+    devicesRef.current = devices;
+  }, [devices]);
+
+  // Seed the simulated visual layer once on mount (client-side).
   useEffect(() => {
     const initial = setTimeout(() => {
       const seededDevices = seedDevices(6);
       setDevices(seededDevices);
-      setMemos(config.useMock ? seedMemos(seededDevices, 3) : []);
       setThreats(seedThreatSeries(24));
+      if (config.useMock) setMemos(seedMemos(seededDevices, 3));
       setLogs([
         {
           id: "boot",
           ts: Date.now(),
           level: "system",
           text: config.useMock
-            ? "Command Center online :: monitoring hospital network immune system."
-            : "Command Center online :: connected to Vultr-native control plane.",
+            ? "Command Center online :: monitoring hospital network immune system (simulated)."
+            : "Command Center online :: connecting to live agent backend...",
         },
       ]);
     }, 0);
     return () => clearTimeout(initial);
   }, []);
 
-  useEffect(() => {
-    if (config.useMock) return;
-    const socket = new WebSocket(endpoints.agentStream);
-    const keepalive = setInterval(() => {
-      if (socket.readyState === WebSocket.OPEN) socket.send("ping");
-    }, 15000);
-    socket.onmessage = (event) => {
-      try {
-        const message = JSON.parse(event.data) as { type?: string; text?: string };
-        const text = message.text ?? event.data;
-        const level: AgentLogLine["level"] = text.includes("ERROR")
-          ? "threat"
-          : text.includes("WARN") || text.includes("OVERRIDE")
-            ? "warn"
-            : text.includes("DONE") || text.includes("SEALED")
-              ? "success"
-              : message.type === "reasoning"
-                ? "info"
-                : "system";
-        pushLogs([{ id: `live_${Date.now()}_${Math.random()}`, ts: Date.now(), level, text }]);
-      } catch {
-        pushLogs([{ id: `live_${Date.now()}`, ts: Date.now(), level: "info", text: event.data }]);
-      }
-    };
-    socket.onerror = () => {
-      pushLogs([{ id: `ws_error_${Date.now()}`, ts: Date.now(), level: "warn", text: "Vultr backend WebSocket disconnected." }]);
-    };
-    return () => {
-      clearInterval(keepalive);
-      socket.close();
-    };
-  }, [pushLogs]);
+  const pushLogs = useCallback((incoming: AgentLogLine[]) => {
+    setLogs((prev) => [...prev, ...incoming].slice(-MAX_LOG_LINES));
+  }, []);
 
-  // Stream an ordered agent run trace, one line at a time, then emit a memo.
-  const runAgent = useCallback(() => {
-    if (running) return;
-    if (!config.useMock) {
-      setRunning(true);
-      const vpcId = config.vpcId;
-      void fetch(endpoints.agentRun, {
-        method: "POST",
-        headers: { "Content-Type": "application/json", ...authHeaders() },
-        body: JSON.stringify({ raw_pdf_text: DEMO_MANUAL, vpc_id: vpcId }),
-      })
-        .then(async (response) => {
-          if (!response.ok) throw new Error(await response.text());
-          return response.json() as Promise<ContractB>;
-        })
-        .then((policy) => {
-          setMemos((current) => [{
-            ...policy,
-            id: `memo_${Date.now()}`,
-            device_model: devices[0]?.model ?? "Philips_IntelliVue",
-            created_at: Date.now(),
-          }, ...current].slice(0, MAX_MEMOS));
-          setThreats((current) => [...current.slice(1), nextThreatPoint()]);
-        })
-        .catch((error: Error) => {
-          pushLogs([{ id: `run_error_${Date.now()}`, ts: Date.now(), level: "threat", text: `Agent run failed: ${error.message}` }]);
-        })
-        .finally(() => setRunning(false));
-      return;
-    }
+  // ---- Mock agent run: stream a scripted trace, then emit a simulated memo.
+  const runAgentMock = useCallback(() => {
     setRunning(true);
     const trace = agentRunTrace();
-    trace.forEach((line, i) => {
-      setTimeout(() => pushLogs([line]), i * 550);
-    });
+    trace.forEach((line, i) => setTimeout(() => pushLogs([line]), i * 550));
     runTimer.current = setTimeout(
       () => {
-        setDevices((prev) => {
-          const target = prev.find((d) => d.status !== "override");
-          setMemos((m) => [makeIncidentMemo(target), ...m].slice(0, MAX_MEMOS));
-          return prev;
-        });
-        setThreats((prev) => [...prev.slice(1), nextThreatPoint()]);
+        const target = devicesRef.current.find((d) => d.status !== "override");
+        const memo = makeIncidentMemo(target);
+        setMemos((m) => [memo, ...m].slice(0, MAX_MEMOS));
+        setDevices((prev) => applyEnforcement(prev, memo.target_vpc_id, memo.firewall_rules));
+        setThreats((prev) => (prev.length ? [...prev.slice(1), nextThreatPoint()] : prev));
         setRunning(false);
       },
       trace.length * 550 + 400,
     );
-  }, [devices, pushLogs, running]);
+  }, [pushLogs]);
 
-  // Ambient telemetry ticks: device vitals, idle log lines, threat series.
+  // ---- Live agent run: POST to the backend and render the returned Contract B.
+  const runAgentLive = useCallback(async () => {
+    setRunning(true);
+    const vpc = config.vpcId;
+    pushLogs([
+      { id: lid(), ts: Date.now(), level: "system", text: `Agent run requested for ${vpc}...` },
+    ]);
+    try {
+      const res = await fetch(endpoints.agentRun, {
+        method: "POST",
+        headers: { "Content-Type": "application/json", ...authHeaders() },
+        body: JSON.stringify({ raw_pdf_text: SAMPLE_MANUAL_TEXT, vpc_id: vpc }),
+      });
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      const data = (await res.json()) as ContractB;
+      const memo = memoFromContractB(data, devicesRef.current);
+      setMemos((m) => [memo, ...m].slice(0, MAX_MEMOS));
+      setDevices((prev) => applyEnforcement(prev, data.target_vpc_id, data.firewall_rules));
+      pushLogs([
+        {
+          id: lid(),
+          ts: Date.now(),
+          level: "success",
+          text: `Contract B received :: confidence ${data.confidence_score}% for ${data.target_vpc_id}.`,
+        },
+      ]);
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : "unknown error";
+      setDataMode("fallback");
+      pushLogs([{ id: lid(), ts: Date.now(), level: "warn", text: `Agent run failed (${msg}).` }]);
+    } finally {
+      setThreats((prev) => (prev.length ? [...prev.slice(1), nextThreatPoint()] : prev));
+      setRunning(false);
+    }
+  }, [pushLogs]);
+
+  const runAgent = useCallback(() => {
+    if (running) return;
+    if (config.useMock) runAgentMock();
+    else runAgentLive();
+  }, [running, runAgentMock, runAgentLive]);
+
+  // ---- Live WebSocket: stream agent reasoning tokens into the terminal.
   useEffect(() => {
-    if (!config.useMock) return;
+    if (config.useMock) return;
+
+    let closed = false;
+    let attempts = 0;
+    let ws: WebSocket | null = null;
+    let retry: ReturnType<typeof setTimeout> | null = null;
+
+    const connect = () => {
+      try {
+        ws = new WebSocket(endpoints.agentStream);
+      } catch {
+        setDataMode("fallback");
+        return;
+      }
+
+      ws.onopen = () => {
+        attempts = 0;
+        wsConnectedRef.current = true;
+        setDataMode("live");
+        pushLogs([
+          { id: lid(), ts: Date.now(), level: "system", text: "Live agent stream connected." },
+        ]);
+      };
+
+      ws.onmessage = (ev) => {
+        let text = "";
+        let type: string | undefined;
+        try {
+          const msg = JSON.parse(ev.data);
+          text = msg.text ?? msg.message ?? "";
+          type = msg.type;
+        } catch {
+          text = typeof ev.data === "string" ? ev.data : "";
+        }
+        if (!text) return;
+        // Backend emits {type:"reasoning"} for the model's thinking (rendered
+        // dim) and {type:"content"} for its decisions/actions (bright, with
+        // semantic colour from the text).
+        const isReasoning = type === "reasoning";
+        pushLogs([
+          {
+            id: lid(),
+            ts: Date.now(),
+            level: isReasoning ? "info" : levelFromText(text, type),
+            dim: isReasoning,
+            text,
+          },
+        ]);
+      };
+
+      ws.onerror = () => {
+        wsConnectedRef.current = false;
+      };
+
+      ws.onclose = () => {
+        wsConnectedRef.current = false;
+        if (closed) return;
+        if (attempts < 3) {
+          attempts += 1;
+          retry = setTimeout(connect, 2000 * attempts);
+        } else {
+          setDataMode("fallback");
+          pushLogs([
+            {
+              id: lid(),
+              ts: Date.now(),
+              level: "warn",
+              text: "Live stream unavailable :: falling back to simulated telemetry.",
+            },
+          ]);
+        }
+      };
+    };
+
+    connect();
+
+    return () => {
+      closed = true;
+      if (retry) clearTimeout(retry);
+      ws?.close();
+    };
+  }, [pushLogs]);
+
+  // ---- Ambient telemetry: vitals + threat chart are always simulated. Idle
+  // log lines run in mock mode, or in live mode while the stream is down.
+  useEffect(() => {
     const vitals = setInterval(() => {
       setDevices((prev) => prev.map(tickDevice));
     }, 2500);
 
     const ambient = setInterval(() => {
-      pushLogs([ambientLine()]);
+      if (config.useMock || !wsConnectedRef.current) pushLogs([ambientLine()]);
     }, 3800);
 
     const series = setInterval(() => {
@@ -188,48 +305,90 @@ export function useSimulatedStream(): CommandCenterState {
     };
   }, [pushLogs]);
 
-  // In autonomous mode, kick off agent runs periodically.
+  // In autonomous mode, kick off agent runs periodically (gentler when live).
   useEffect(() => {
     if (!config.useMock || !autonomous) return;
     const id = setInterval(() => runAgent(), 16000);
     return () => clearInterval(id);
   }, [autonomous, runAgent]);
 
-  useEffect(() => () => {
-    if (runTimer.current) clearTimeout(runTimer.current);
-  }, []);
+  useEffect(
+    () => () => {
+      if (runTimer.current) clearTimeout(runTimer.current);
+    },
+    [],
+  );
 
-  // Human Override: retract active policy for a device (maps to DELETE /policy/:id).
+  // Human Override: retract the active policy for a device
+  // (maps to DELETE /api/v1/policy/{device_id}).
   const overrideDevice = useCallback(
-    (deviceId: string) => {
-      const device = devices.find((d) => d.id === deviceId);
-      if (!config.useMock && device) {
-        void fetch(endpoints.policy(device.vpc_id), {
-          method: "DELETE",
-          headers: authHeaders(),
-        }).then(async (response) => {
-          if (!response.ok) throw new Error(await response.text());
-        }).catch((error: Error) => {
-          pushLogs([{ id: `override_error_${Date.now()}`, ts: Date.now(), level: "threat", text: `Override failed: ${error.message}` }]);
-        });
-      }
+    async (deviceId: string) => {
+      const device = devicesRef.current.find((d) => d.id === deviceId);
+      const willOverride = device?.status !== "override";
+
+      // Optimistic UI: toggle status, clear enforced rules when releasing.
       setDevices((prev) =>
         prev.map((d) =>
           d.id === deviceId
-            ? { ...d, status: d.status === "override" ? "secure" : "override" }
+            ? {
+                ...d,
+                status: willOverride ? "override" : "secure",
+                firewallRules: willOverride ? undefined : d.firewallRules,
+              }
             : d,
         ),
       );
+
       pushLogs([
         {
-          id: `override_${deviceId}_${Date.now()}`,
+          id: lid(),
           ts: Date.now(),
           level: "warn",
-          text: `Human Override :: operator toggled policy control for ${device?.model ?? deviceId}.`,
+          text: `Human Override :: operator ${willOverride ? "retracting policy for" : "restoring"} ${device?.model ?? deviceId}.`,
         },
       ]);
+
+      // Only the "retract" direction hits the backend. On success the backend
+      // broadcasts a [HUMAN OVERRIDE] content message over the WebSocket, which
+      // shows up in the terminal automatically.
+      if (config.useMock || !willOverride) return;
+
+      try {
+        const res = await fetch(endpoints.policy(device?.vpc_id ?? deviceId), {
+          method: "DELETE",
+          headers: authHeaders(),
+        });
+        if (res.status === 404) {
+          pushLogs([
+            {
+              id: lid(),
+              ts: Date.now(),
+              level: "warn",
+              text: `Override :: backend reports no active policy for '${deviceId}'.`,
+            },
+          ]);
+        } else if (!res.ok) {
+          pushLogs([
+            {
+              id: lid(),
+              ts: Date.now(),
+              level: "warn",
+              text: `Override :: backend returned HTTP ${res.status}.`,
+            },
+          ]);
+        }
+      } catch {
+        pushLogs([
+          {
+            id: lid(),
+            ts: Date.now(),
+            level: "warn",
+            text: "Override :: backend unreachable, applied locally only.",
+          },
+        ]);
+      }
     },
-    [devices, pushLogs],
+    [pushLogs],
   );
 
   const stats = useMemo<DashboardStats>(() => {
@@ -256,6 +415,7 @@ export function useSimulatedStream(): CommandCenterState {
     stats,
     autonomous,
     running,
+    dataMode,
     setAutonomous,
     runAgent,
     overrideDevice,
