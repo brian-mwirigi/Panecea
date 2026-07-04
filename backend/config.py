@@ -28,3 +28,8 @@ VULTR_INFERENCE_TIMEOUT = float(_require("VULTR_INFERENCE_TIMEOUT"))
 VULTR_API_KEY = os.getenv("VULTR_API_KEY", "")
 VULTR_VECTOR_STORE_URL = os.getenv("VULTR_VECTOR_STORE_URL", "")
 VULTR_VPC_ID = os.getenv("VULTR_VPC_ID", "vpc-medical-01")
+
+# Native data and control plane
+VULTR_RAG_MODEL = os.getenv("VULTR_RAG_MODEL", "qwen2.5-32b-instruct")
+VULTR_TOOL_MODEL = os.getenv("VULTR_TOOL_MODEL", VULTR_MAIN_MODEL)
+VULTR_NATIVE_STRICT = os.getenv("VULTR_NATIVE_STRICT", "false").lower() == "true"

@@ -58,7 +58,7 @@
 **5. Brian – Agent Orchestration (Core + Stretch)**
 
 * **The Task:** Build the Vultr Serverless Inference agent loop and tie our modules together.
-* **The Stretch:** Own the v2 differentiators (CVE mock cross-check, confidence scoring, and memo generation). If time runs short, I will cut these first to ensure the core firewall loop survives.
+* **The Stretch:** Own the v2 differentiators (Vultr Vector Store CVE cross-check, confidence scoring, and memo generation). If time runs short, I will cut these first to ensure the core firewall loop survives.
 
 Here is the master context document. You can copy and paste this directly into your `.cursorrules` file, pass it as a master prompt to your coding agent (like Claude Code, OpenClaw, or Cursor), or drop it into your project's `README.md`.
 
@@ -88,11 +88,29 @@ It is formatted specifically to give an AI coding assistant the exact architectu
 
 1. **Ingest:** A teammate's module uploads a PDF to Vultr Object Storage.
 2. **Extract:** Vultr Serverless Inference parses it, pulls protocols/ports/firmware, and streams thoughts via WebSockets.
-3. **Cross-Check (Stretch Goal):** The agent calls a mock CVE vulnerability lookup tool for the specific device + firmware.
+3. **Cross-Check:** The agent grounds its CVE lookup in a dedicated Vultr Vector Store collection for the specific device and firmware.
 4. **Decide & Score:** Agent generates the zero-trust policy + confidence score.
 5. **Store:** Policy pushed to Vultr Vector Store as the canonical record.
 6. **Monitor & Enforce:** Simulated event hits policy → Firewall API is called.
 7. **Report:** Generate an Incident Memo for the frontend.
+
+## Vultr-Native Control Plane
+
+The implemented control path is now:
+
+1. Upload the original PDF to Vultr Object Storage through `POST /api/v1/manuals/run`.
+2. Extract Contract A with Vultr Serverless Inference, chunk it into Vultr Vector Store,
+   then retrieve the authoritative passages through Vultr's RAG endpoint.
+3. Query a separate Vultr Vector Store CVE collection instead of an external CVE service.
+4. Publish validated Contract A and policy events to Vultr Managed Kafka.
+5. Apply Contract B through the Vultr managed NAT Gateway API. ALLOW entries become
+   expiring policy leases; DENY entries remove matching allow/forwarding resources.
+6. Seal the policy, source hash, RAG context, lease, and Vultr enforcement receipt in
+   an Object-Locked evidence bucket and write the outcome back to Vector Store memory.
+7. Require Vultr IAM/OIDC operator identity for execution and human override in strict mode.
+
+VKE deployment manifests, Calico network policies, Container Registry Dockerfiles,
+Kafka JSON schemas, and provisioning prerequisites are under `infra/`.
 
 ## Strict API Contracts
 

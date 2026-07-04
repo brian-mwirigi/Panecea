@@ -14,6 +14,7 @@ from services.vultr_firewall import apply_rules, retract_rules
 # In-memory store of active policies — keyed by device_model
 # Zain's firewall scripts read ContractB; this bridges the orchestrator to that handoff
 _active_policies: dict[str, ContractB] = {}
+_enforcement_results: dict[str, dict] = {}
 
 
 def apply_firewall_rule(
@@ -43,6 +44,7 @@ def apply_firewall_rule(
 
     # Store by VPC ID so DELETE /api/v1/policy/{device_id} can find it
     _active_policies[target_vpc_id] = policy
+    _enforcement_results[target_vpc_id] = result
 
     return json.dumps({
         "status": result.get("status", "applied"),
@@ -50,6 +52,8 @@ def apply_firewall_rule(
         "rules_enforced": len(firewall_rules),
         "confidence_score": confidence_score,
         "cve_flagged": cve_flagged,
+        "lease_id": result.get("lease_id"),
+        "expires_at": result.get("expires_at"),
     })
 
 
@@ -62,14 +66,17 @@ def retract_firewall_rule(device_id: str) -> str:
     if not policy:
         return json.dumps({"status": "not_found", "device_id": device_id})
 
+    enforcement = _enforcement_results.get(device_id, {})
     result = retract_rules(policy)
     del _active_policies[device_id]
+    _enforcement_results.pop(device_id, None)
 
     return json.dumps({
         "status": result.get("status", "retracted"),
         "device_id": device_id,
         "vpc_id": policy.target_vpc_id,
         "rules_removed": len(policy.firewall_rules),
+        "lease_id": enforcement.get("lease_id"),
     })
 
 
@@ -78,3 +85,6 @@ def get_active_policy(device_id: str) -> ContractB | None:
     return _active_policies.get(device_id)
 
 
+def get_enforcement_result(device_id: str) -> dict | None:
+    """Returns the latest live Vultr enforcement receipt for a VPC."""
+    return _enforcement_results.get(device_id)

@@ -95,7 +95,13 @@ TOOLS = [
 # Per-step message builders
 # ---------------------------------------------------------------------------
 
-def agentic_policy_prompt(device_model: str, firmware_version: str, allowed_ports: list[dict], vpc_id: str) -> list[dict]:
+def agentic_policy_prompt(
+    device_model: str,
+    firmware_version: str,
+    allowed_ports: list[dict],
+    vpc_id: str,
+    retrieved_context: str = "",
+) -> list[dict]:
     """
     Step 2+3+4 combined — Nemotron autonomously reasons, calls check_cve,
     then calls apply_firewall_rule. Judges watch the full reasoning chain live.
@@ -113,6 +119,9 @@ Device: {device_model}
 Firmware: {firmware_version}
 Ports required by the device manual:
 {ports_str}
+
+Evidence retrieved from Vultr Vector Store:
+{retrieved_context or "No additional evidence retrieved."}
 
 Your task:
 1. Call check_cve to identify any known vulnerabilities for this device and firmware.

@@ -9,6 +9,7 @@ import { AgentTerminal } from "@/components/dashboard/AgentTerminal";
 import { IncidentMemo } from "@/components/dashboard/IncidentMemo";
 import { HumanOverride } from "@/components/dashboard/HumanOverride";
 import { DeviceTable } from "@/components/dashboard/DeviceTable";
+import { config } from "@/lib/config";
 
 export default function CommandCenter() {
   const {
@@ -53,8 +54,7 @@ export default function CommandCenter() {
       </section>
 
       <footer className="pb-2 pt-1 text-center text-[11px] text-white/25">
-        Panacea v2 · Command Center · running on simulated telemetry — swap to
-        live backend via NEXT_PUBLIC_USE_MOCK=false
+        Panacea v2 · Command Center · {config.useMock ? "simulated telemetry" : "live Vultr control plane"}
       </footer>
     </main>
   );
