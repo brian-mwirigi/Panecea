@@ -8,7 +8,7 @@
   "device_model": "Philips_IntelliVue",
   "firmware_version": "B.01",
   "allowed_ports": [
-    {"port": 3200, "protocol": "TCP", "reason": "HL7 Patient Data"}
+    {"port": 24105, "protocol": "UDP", "reason": "Data Export Interface (main data channel)"}
   ],
   "source_doc_id": "vultr_vector_id_12345"
 }
@@ -21,12 +21,12 @@
 {
   "target_vpc_id": "vpc-medical-01",
   "firewall_rules": [
-    {"port": 3200, "action": "ALLOW"},
+    {"port": 24105, "action": "ALLOW"},
     {"port": 22, "action": "DENY"}
   ],
   "confidence_score": 96,
   "cve_flagged": "CVE-2023-XXXX",
-  "memo_text": "Blocked lateral pivot on Port 22. Allowed Port 3200 per Vector ID: 12345."
+  "memo_text": "Blocked lateral pivot on Port 22. Allowed Port 24105 per Vector ID: 12345."
 }
 
 ```
@@ -52,7 +52,7 @@
 **4. Mohamed – IIoT Target & Manual Sourcing**
 
 * **The Task:** Set up the Philips VM target for Zain.
-* **The Addition:** You explicitly own sourcing the actual Philips IntelliVue PDF manual and finding the exact page that mentions Port 3200 so we have our demo prop ready.
+* **The Addition:** You explicitly own sourcing the actual Philips IntelliVue PDF manual and finding the exact page that mentions the real network port so we have our demo prop ready. **Done:** real manual sourced (`docs/manuals/philips-intellivue-data-export-interface-guide.pdf`) — the real port is **UDP 24105** (p. 29), not the earlier TCP 3200/HL7 placeholder. All example data updated to match.
 
 **5. Brian – Agent Orchestration (Core + Stretch)**
 
@@ -104,7 +104,7 @@ Do not write any routing or parsing code that breaks these JSON schemas.
   "device_model": "Philips_IntelliVue",
   "firmware_version": "B.01",
   "allowed_ports": [
-    {"port": 3200, "protocol": "TCP", "reason": "HL7 Patient Data"}
+    {"port": 24105, "protocol": "UDP", "reason": "Data Export Interface (main data channel)"}
   ],
   "source_doc_id": "vultr_vector_id_12345"
 }
@@ -117,12 +117,12 @@ Do not write any routing or parsing code that breaks these JSON schemas.
 {
   "target_vpc_id": "vpc-medical-01",
   "firewall_rules": [
-    {"port": 3200, "action": "ALLOW"},
+    {"port": 24105, "action": "ALLOW"},
     {"port": 22, "action": "DENY"}
   ],
   "confidence_score": 96,
   "cve_flagged": "CVE-2023-XXXX",
-  "memo_text": "Blocked lateral pivot on Port 22. Allowed Port 3200 per Vector ID: 12345."
+  "memo_text": "Blocked lateral pivot on Port 22. Allowed Port 24105 per Vector ID: 12345."
 }
 
 ```
