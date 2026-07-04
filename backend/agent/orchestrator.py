@@ -35,20 +35,29 @@ from services.vultr_vector import (
 )
 
 
-# Demo manual — matches frontend SAMPLE_MANUAL_TEXT until PDF upload is wired in.
+# Demo manual — sourced from the real Philips IntelliVue Data Export Interface
+# Programming Guide (part 4535 645 88011, release L.0, 08/2015, 339 pp).
+# UDP 24105 is from Section 4, p.29. UDP 24005 is from Section 5, p.53.
+# Using these real numbers so the fallback path produces citable output.
 DEMO_MANUAL_TEXT = (
-    "Philips IntelliVue Patient Monitor — Network Configuration Guide (Firmware B.01). "
-    "The monitor transmits HL7 patient data over TCP port 3200 to the central station. "
-    "Port 2050 is used for device discovery. All remote administration (SSH, port 22) "
-    "must remain disabled in clinical deployments to prevent lateral movement."
+    "Philips IntelliVue Patient Monitor — Data Export Interface Programming Guide "
+    "(X2, MP, MX, FM Series, Release L.0, Firmware B.01). "
+    "Section 4 — Transport Protocols for the LAN Interface (p. 29): "
+    "'The current Protocol version uses the fixed UDP port 24105. "
+    "All messages sent from the Computer Client to the monitor must use this port number "
+    "as the destination port number.' "
+    "Section 5 — Connect Indication Event (p. 53): "
+    "UDP port 24005 is used for device discovery broadcasts. "
+    "All remote administration (SSH, port 22) must remain disabled in clinical "
+    "deployments to prevent lateral movement across the hospital network."
 )
 
 DEMO_CONTRACT_A = ContractA(
     device_model="Philips_IntelliVue",
     firmware_version="B.01",
     allowed_ports=[
-        AllowedPort(port=3200, protocol="TCP", reason="HL7 patient data"),
-        AllowedPort(port=2050, protocol="UDP", reason="Device discovery"),
+        AllowedPort(port=24105, protocol="UDP", reason="Data Export Protocol — main data channel (p.29)"),
+        AllowedPort(port=24005, protocol="UDP", reason="Device discovery / Connect Indication broadcast (p.53)"),
     ],
     source_doc_id="",
 )
