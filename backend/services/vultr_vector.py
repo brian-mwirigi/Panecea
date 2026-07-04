@@ -136,8 +136,10 @@ class VultrVectorStore:
                     response.raise_for_status()
                 if response.is_error:
                     detail = response.text[:500]
+                    endpoint = url.rsplit("/", 2)[-2:]
                     raise VultrVectorStoreError(
-                        f"Vultr Vector Store returned HTTP {response.status_code}: {detail}"
+                        f"Vultr Vector Store returned HTTP {response.status_code} "
+                        f"at .../{'/'.join(endpoint)}: {detail}"
                     )
                 return response
             except (httpx.TimeoutException, httpx.NetworkError, httpx.HTTPStatusError) as exc:
