@@ -114,7 +114,7 @@ async def run_pipeline(
     # Step 5: Commit Contract A and chunks before any enforcement decision.
     # ------------------------------------------------------------------
     await _emit("\n[STEP 5] Chunking manual and storing Contract A in Vultr Vector Store...\n")
-    ingestion = await ingest_manual(raw_pdf_text, contract_a)
+    ingestion = await ingest_manual(manual_text, contract_a)
     contract_a = contract_a.model_copy(update={"source_doc_id": ingestion.source_doc_id})
     await publish_event("contract-a.extracted", ingestion.source_doc_id, contract_a.model_dump(mode="json"))
     await _emit(
