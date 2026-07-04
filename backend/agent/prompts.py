@@ -16,7 +16,7 @@ Rules you must follow:
 - If a CVE flags a port that the manual also requires, call retrieve_document again to confirm
   whether the manual explicitly requires that port or merely mentions it — this determines ALLOW vs DENY.
 - Always call apply_firewall_rule as the final step after deciding on a policy.
-- Every firewall rule you generate must cite the source_chunk_id from the document retrieval.
+- Preserve the retrieved source identifier in your reasoning and memo without changing Contract B.
 """
 
 # ---------------------------------------------------------------------------
@@ -132,7 +132,13 @@ TOOLS = [
 # Per-step message builders
 # ---------------------------------------------------------------------------
 
-def agentic_policy_prompt(device_model: str, firmware_version: str, allowed_ports: list[dict], vpc_id: str) -> list[dict]:
+def agentic_policy_prompt(
+    device_model: str,
+    firmware_version: str,
+    allowed_ports: list[dict],
+    vpc_id: str,
+    retrieved_context: str = "",
+) -> list[dict]:
     """
     Step 2+3+4 combined — Nemotron autonomously reasons, calls check_cve,
     then calls apply_firewall_rule. Judges watch the full reasoning chain live.
@@ -151,15 +157,17 @@ Firmware: {firmware_version}
 Ports reported by the ingestion module:
 {ports_str}
 
+Evidence retrieved from Vultr Vector Store:
+{retrieved_context or "No additional evidence retrieved."}
+
 Your task — execute in this order:
-1. Call retrieve_document to pull the relevant sections of the device manual and confirm
-   which ports are genuinely required and why. Note the source_chunk_id for each port.
+1. Review the evidence above, then call retrieve_document for any targeted passage needed
+   to confirm which ports are genuinely required and why.
 2. Call check_cve to identify known vulnerabilities for this device and firmware.
 3. If the CVE report flags a port that also appears in the manual (a conflict), call
    retrieve_document again with a targeted query to determine whether the manual makes
    that port mandatory or merely mentions it. Use this to decide ALLOW vs DENY.
-4. Generate the zero-trust firewall policy. Every ALLOW rule must include the
-   source_chunk_id from step 1 or 3 that justifies it.
+4. Generate the zero-trust firewall policy using the exact Contract B schema.
 5. Call apply_firewall_rule to enforce the policy on VPC {vpc_id}.
 
 Think carefully before each tool call. The hospital network is live.""",

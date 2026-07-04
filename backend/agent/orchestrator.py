@@ -1,7 +1,11 @@
 # Core 7-step agent loop. Coordinates extraction → CVE check → policy decision → firewall enforcement → memo generation.
 
 import json
+import hashlib
+import os
 import sys
+import uuid
+from datetime import datetime
 from pathlib import Path
 from typing import Awaitable, Callable
 
@@ -10,18 +14,30 @@ if str(BACKEND_ROOT) not in sys.path:
     sys.path.insert(0, str(BACKEND_ROOT))
 
 from agent.prompts import TOOLS, agentic_policy_prompt, extraction_prompt, incident_memo_prompt
-from agent.tools.cve_lookup import format_for_llm, mock_cve_lookup
-from agent.tools.firewall import apply_firewall_rule, retract_firewall_rule
+from agent.tools.firewall import apply_firewall_rule, get_enforcement_result, retract_firewall_rule
 from schemas.contract_a import ContractA
 from schemas.contract_b import ContractB, FirewallRule
+from schemas.control_plane import EvidenceBundle, EnforcementReceipt, PolicyLease
+from services.vultr_events import publish_event
 from services.vultr_inference import StreamToken, complete, run_agentic_loop
-from services.vultr_vector import format_chunks_for_llm, ingest_manual, query_manual
+from services.vultr_object_storage import VultrObjectStorage, VultrObjectStorageError
+from services.policy_leases import cancel_expiry, schedule_expiry
+from services.vultr_vector import (
+    VultrVectorStore,
+    ingest_manual,
+    query_cve,
+    query_manual,
+    retrieve_document,
+)
 
 
 async def run_pipeline(
     raw_pdf_text: str,
     vpc_id: str,
     on_token: Callable[[StreamToken], Awaitable[None]] | None = None,
+    manual_object_key: str = "",
+    operator_id: str = "panacea-agent",
+    source_doc_id: str = "",
 ) -> ContractB:
     """
     Executes the full 7-step PANACEA pipeline.
@@ -54,10 +70,28 @@ async def run_pipeline(
     await _emit("\n[STEP 2] Extracting network requirements from device manual...\n")
     extraction_raw = await complete(extraction_prompt(raw_pdf_text))
     contract_a = _parse_contract_a(extraction_raw)
+    if source_doc_id:
+        contract_a = contract_a.model_copy(update={"source_doc_id": source_doc_id})
     await _emit(f"[STEP 2 DONE] Device: {contract_a.device_model} | Firmware: {contract_a.firmware_version} | Ports: {[p.port for p in contract_a.allowed_ports]}\n")
 
     # ------------------------------------------------------------------
-    # Step 3 + 4 + 6: Nemotron autonomously calls tools to CVE check,
+    # Step 5: Commit Contract A and chunks before any enforcement decision.
+    # ------------------------------------------------------------------
+    await _emit("\n[STEP 5] Chunking manual and storing Contract A in Vultr Vector Store...\n")
+    ingestion = await ingest_manual(raw_pdf_text, contract_a)
+    contract_a = contract_a.model_copy(update={"source_doc_id": ingestion.source_doc_id})
+    await publish_event("contract-a.extracted", ingestion.source_doc_id, contract_a.model_dump(mode="json"))
+    await _emit(
+        f"[STEP 5 DONE] Stored {ingestion.chunk_count} chunks in Vultr collection "
+        f"{ingestion.collection_id}; source vector {ingestion.source_doc_id}.\n"
+    )
+
+    await _emit("\n[MEMORY] Retrieving authoritative evidence through Vultr RAG...\n")
+    retrieved_context = await query_manual(ingestion.collection_id, contract_a)
+    await _emit("[MEMORY DONE] Manufacturer evidence attached to the decision.\n")
+
+    # ------------------------------------------------------------------
+    # Step 3 + 4 + 6: the tool-capable Vultr model checks CVE memory,
     # decide policy, and apply firewall rules
     # ------------------------------------------------------------------
     await _emit("\n[STEP 3-4-6] Handing control to Nemotron for CVE check, policy decision, and firewall enforcement...\n")
@@ -67,6 +101,7 @@ async def run_pipeline(
         firmware_version=contract_a.firmware_version,
         allowed_ports=[p.model_dump() for p in contract_a.allowed_ports],
         vpc_id=vpc_id,
+        retrieved_context=retrieved_context,
     )
 
     final_message = await run_agentic_loop(
@@ -75,20 +110,6 @@ async def run_pipeline(
         tool_executor=_tool_executor,
         on_token=on_token,
     )
-
-    # ------------------------------------------------------------------
-    # Step 5: Store the extracted manual in Vultr Vector Store
-    # ------------------------------------------------------------------
-    await _emit("\n[STEP 5] Chunking manual and storing Contract A in Vultr Vector Store...\n")
-    try:
-        ingestion = await ingest_manual(raw_pdf_text, contract_a)
-        contract_a = contract_a.model_copy(update={"source_doc_id": ingestion.source_doc_id})
-        await _emit(
-            f"[STEP 5 DONE] Stored {ingestion.chunk_count} chunks in Vultr collection "
-            f"{ingestion.collection_id}; source vector {ingestion.source_doc_id}.\n"
-        )
-    except Exception as e:
-        await _emit(f"[STEP 5 WARN] Vector store unavailable — continuing without storage: {e}\n")
 
     # ------------------------------------------------------------------
     # Extract ContractB from the last apply_firewall_rule tool call.
@@ -115,10 +136,58 @@ async def run_pipeline(
     contract_b.memo_text = memo.strip()
     await _emit("\n[STEP 7 DONE] Memo ready.\n", "content")
 
+    enforcement = get_enforcement_result(vpc_id)
+    if not enforcement:
+        raise RuntimeError("Vultr enforcement completed without a durable receipt")
+    receipt = EnforcementReceipt.model_validate(enforcement["receipt"])
+    lease = PolicyLease(
+        lease_id=enforcement["lease_id"],
+        source_doc_id=contract_a.source_doc_id,
+        policy=contract_b,
+        expires_at=datetime.fromisoformat(enforcement["expires_at"]),
+        receipt=receipt,
+    )
+    schedule_expiry(lease)
+    evidence = EvidenceBundle(
+        evidence_id=f"evidence-{uuid.uuid4().hex}",
+        contract_a=contract_a,
+        contract_b=contract_b,
+        lease=lease,
+        manual_sha256=hashlib.sha256(raw_pdf_text.encode()).hexdigest(),
+        retrieved_context=retrieved_context,
+        model_id=os.getenv("VULTR_TOOL_MODEL", os.getenv("VULTR_MAIN_MODEL", "")),
+        operator_id=operator_id,
+        metadata={"manual_object_key": manual_object_key, "collection_id": ingestion.collection_id},
+    )
+
+    evidence_key = ""
+    storage = VultrObjectStorage()
+    if storage.configured:
+        evidence_key, evidence_hash = storage.seal_evidence(evidence)
+        evidence = evidence.model_copy(update={"evidence_sha256": evidence_hash})
+    elif storage.strict:
+        raise VultrObjectStorageError("Vultr Object Storage is required in strict mode")
+
+    event_payload = {
+        "contract_b": contract_b.model_dump(mode="json"),
+        "lease": lease.model_dump(mode="json"),
+        "evidence_key": evidence_key,
+        "evidence_sha256": evidence.evidence_sha256,
+    }
+    await publish_event("contract-b.enforced", lease.lease_id, contract_b.model_dump(mode="json"))
+    await publish_event("policy.enforced", lease.lease_id, event_payload)
+    vector = VultrVectorStore(collection_id=ingestion.collection_id)
+    await vector.add_item(
+        ingestion.collection_id,
+        json.dumps(event_payload, separators=(",", ":"), default=str),
+        f"Enforcement outcome for {contract_a.device_model}; lease {lease.lease_id}",
+    )
+    await _emit(f"[EVIDENCE SEALED] Lease {lease.lease_id}; object {evidence_key or 'strict-mode disabled'}.\n")
+
     return contract_b
 
 
-def _tool_executor(tool_name: str, arguments: dict) -> str:
+async def _tool_executor(tool_name: str, arguments: dict) -> str:
     """
     Routes Nemotron's tool call requests to the correct Python function.
     This is the bridge between the LLM and the actual tool implementations.
@@ -131,12 +200,18 @@ def _tool_executor(tool_name: str, arguments: dict) -> str:
         )
         return format_chunks_for_llm(chunks)
 
+    if tool_name == "retrieve_document":
+        return await retrieve_document(
+            query=arguments.get("query", ""),
+            device_model=arguments.get("device_model", ""),
+            top_k=arguments.get("top_k", 3),
+        )
+
     if tool_name == "check_cve":
-        result = mock_cve_lookup(
+        return await query_cve(
             device_model=arguments.get("device_model", ""),
             firmware_version=arguments.get("firmware_version", ""),
         )
-        return format_for_llm(result)
 
     if tool_name == "apply_firewall_rule":
         return apply_firewall_rule(
@@ -156,7 +231,10 @@ async def retract_policy(device_id: str) -> dict:
     Immediately retracts the active firewall policy for the given device.
     """
     result = retract_firewall_rule(device_id)
-    return json.loads(result)
+    parsed = json.loads(result)
+    if parsed.get("lease_id"):
+        cancel_expiry(parsed["lease_id"])
+    return parsed
 
 
 def _deterministic_policy(contract_a: ContractA, vpc_id: str) -> ContractB:
@@ -165,8 +243,6 @@ def _deterministic_policy(contract_a: ContractA, vpc_id: str) -> ContractB:
     when Nemotron does not call apply_firewall_rule. ALLOWs manual ports,
     DENYs SSH/Telnet, and flags any CVE found for the device.
     """
-    cve = mock_cve_lookup(contract_a.device_model, contract_a.firmware_version)
-
     rules = [FirewallRule(port=p.port, action="ALLOW") for p in contract_a.allowed_ports]
     # Always deny common lateral-movement ports not explicitly allowed
     allowed_ports = {p.port for p in contract_a.allowed_ports}
@@ -174,19 +250,12 @@ def _deterministic_policy(contract_a: ContractA, vpc_id: str) -> ContractB:
         if risky_port not in allowed_ports:
             rules.append(FirewallRule(port=risky_port, action="DENY"))
 
-    cve_id = cve["cve_id"]
-    if cve_id != "NONE":
-        memo = (
-            f"Blocked lateral movement on ports 22/23 for {contract_a.device_model}. "
-            f"Flagged {cve_id} ({cve['severity']}). Allowed manual-approved ports {sorted(allowed_ports)}."
-        )
-        confidence = 88
-    else:
-        memo = (
-            f"Applied zero-trust baseline for {contract_a.device_model}. "
-            f"Allowed {sorted(allowed_ports)}, denied SSH/Telnet."
-        )
-        confidence = 82
+    cve_id = "NONE"
+    memo = (
+        f"Applied deterministic zero-trust baseline for {contract_a.device_model}; "
+        f"allowed {sorted(allowed_ports)}, denied SSH/Telnet. CVE evidence requires manual review."
+    )
+    confidence = 60
 
     return ContractB(
         target_vpc_id=vpc_id,

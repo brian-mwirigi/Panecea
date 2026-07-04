@@ -67,8 +67,7 @@ export default function CommandCenter() {
       )}
 
       <footer className="mt-auto pt-2 text-center text-[11px] text-white/25">
-        Panacea v2 · Command Center · live agent reasoning &amp; incident memos
-        when the backend is connected; device vitals are simulated
+        Panacea v2 · Command Center · {dataMode === "live" ? "live Vultr control plane" : "device-twin simulation"}
       </footer>
     </main>
   );

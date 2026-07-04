@@ -26,6 +26,11 @@ import type {
 const MAX_LOG_LINES = 120;
 const MAX_MEMOS = 8;
 
+function authHeaders(): HeadersInit {
+  const token = typeof window === "undefined" ? null : sessionStorage.getItem("panacea_access_token");
+  return token ? { Authorization: `Bearer ${token}` } : {};
+}
+
 /** How the terminal/memos are currently sourced. */
 export type DataMode = "mock" | "live" | "fallback";
 
@@ -110,22 +115,23 @@ export function useSimulatedStream(): CommandCenterState {
 
   // Seed the simulated visual layer once on mount (client-side).
   useEffect(() => {
-    const seededDevices = seedDevices(6);
-    setDevices(seededDevices);
-    setThreats(seedThreatSeries(24));
-    if (config.useMock) {
-      setMemos(seedMemos(seededDevices, 3));
-    }
-    setLogs([
-      {
-        id: "boot",
-        ts: Date.now(),
-        level: "system",
-        text: config.useMock
-          ? "Command Center online :: monitoring hospital network immune system (simulated)."
-          : "Command Center online :: connecting to live agent backend...",
-      },
-    ]);
+    const initial = setTimeout(() => {
+      const seededDevices = seedDevices(6);
+      setDevices(seededDevices);
+      setThreats(seedThreatSeries(24));
+      if (config.useMock) setMemos(seedMemos(seededDevices, 3));
+      setLogs([
+        {
+          id: "boot",
+          ts: Date.now(),
+          level: "system",
+          text: config.useMock
+            ? "Command Center online :: monitoring hospital network immune system (simulated)."
+            : "Command Center online :: connecting to live agent backend...",
+        },
+      ]);
+    }, 0);
+    return () => clearTimeout(initial);
   }, []);
 
   const pushLogs = useCallback((incoming: AgentLogLine[]) => {
@@ -155,14 +161,14 @@ export function useSimulatedStream(): CommandCenterState {
   const runAgentLive = useCallback(async () => {
     setRunning(true);
     let denyBoost = 0;
-    const vpc = devicesRef.current.find((d) => d.status !== "override")?.vpc_id ?? "vpc-medical-01";
+    const vpc = devicesRef.current.find((d) => d.status !== "override")?.vpc_id ?? config.vpcId;
     pushLogs([
       { id: lid(), ts: Date.now(), level: "system", text: `Agent run requested for ${vpc}...` },
     ]);
     try {
       const res = await fetch(endpoints.agentRun, {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
+        headers: { "Content-Type": "application/json", ...authHeaders() },
         body: JSON.stringify({ raw_pdf_text: SAMPLE_MANUAL_TEXT, vpc_id: vpc }),
       });
       if (!res.ok) throw new Error(`HTTP ${res.status}`);
@@ -181,6 +187,7 @@ export function useSimulatedStream(): CommandCenterState {
       ]);
     } catch (err) {
       const msg = err instanceof Error ? err.message : "unknown error";
+      setDataMode("fallback");
       pushLogs([
         {
           id: lid(),
@@ -317,8 +324,8 @@ export function useSimulatedStream(): CommandCenterState {
 
   // In autonomous mode, kick off agent runs periodically (gentler when live).
   useEffect(() => {
-    if (!autonomous) return;
-    const id = setInterval(() => runAgent(), config.useMock ? 16000 : 30000);
+    if (!config.useMock || !autonomous) return;
+    const id = setInterval(() => runAgent(), 16000);
     return () => clearInterval(id);
   }, [autonomous, runAgent]);
 
@@ -343,7 +350,7 @@ export function useSimulatedStream(): CommandCenterState {
             ? {
                 ...d,
                 status: willOverride ? "override" : "secure",
-                firewallRules: willOverride ? d.firewallRules : undefined,
+                firewallRules: willOverride ? undefined : d.firewallRules,
               }
             : d,
         ),
@@ -364,7 +371,10 @@ export function useSimulatedStream(): CommandCenterState {
       if (config.useMock || !willOverride) return;
 
       try {
-        const res = await fetch(endpoints.policy(deviceId), { method: "DELETE" });
+        const res = await fetch(endpoints.policy(device?.vpc_id ?? deviceId), {
+          method: "DELETE",
+          headers: authHeaders(),
+        });
         if (res.status === 404) {
           pushLogs([
             {

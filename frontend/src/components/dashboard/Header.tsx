@@ -22,9 +22,12 @@ export function Header({ autonomous, running, dataMode }: HeaderProps) {
         minute: "2-digit",
         second: "2-digit",
       });
-    setNow(fmt());
+    const initial = setTimeout(() => setNow(fmt()), 0);
     const id = setInterval(() => setNow(fmt()), 1000);
-    return () => clearInterval(id);
+    return () => {
+      clearTimeout(initial);
+      clearInterval(id);
+    };
   }, []);
 
   return (

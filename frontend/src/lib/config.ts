@@ -19,6 +19,9 @@ export const config = {
   /** WebSocket endpoint that streams live agent reasoning tokens. */
   wsUrl:
     process.env.NEXT_PUBLIC_WS_URL ?? "ws://localhost:8000/ws/agent-stream",
+
+  /** Real Vultr VPC targeted by the demo agent. */
+  vpcId: process.env.NEXT_PUBLIC_VPC_ID ?? "vpc-medical-01",
 } as const;
 
 /**
