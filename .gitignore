@@ -1,22 +1,23 @@
-<<<<<<< HEAD
-# Environment secrets — never commit
-.env
-backend/.env
-=======
 # Environment / secrets — NEVER commit real API keys
 .env
+.env.*
+!.env.example
+backend/.env
+backend/.env.*
+!backend/.env.example
 infra/zain/.env
->>>>>>> bc63691 (feat: zain vultr firewall execution module (apply_rules/retract_rules))
+infra/zain/.env.*
+!infra/zain/.env.example
+.claude/settings.local.json
 
 # Python
 __pycache__/
 *.py[cod]
-<<<<<<< HEAD
 *.pyo
+*.egg-info/
 .venv/
 venv/
 env/
-*.egg-info/
 dist/
 build/
 .pytest_cache/
@@ -25,19 +26,10 @@ build/
 node_modules/
 .next/
 out/
-
-# OS
-.DS_Store
-Thumbs.db
-=======
-*.egg-info/
-.venv/
-venv/
-env/
+.vercel/
 
 # OS / editor cruft
 .DS_Store
 Thumbs.db
 .idea/
 .vscode/
->>>>>>> bc63691 (feat: zain vultr firewall execution module (apply_rules/retract_rules))

@@ -27,7 +27,7 @@ async def test_model(model: str):
         device_model="Philips_IntelliVue",
         firmware_version="B.01",
         allowed_ports=[
-            {"port": 3200, "protocol": "TCP", "reason": "HL7 patient data"},
+            {"port": 24105, "protocol": "UDP", "reason": "Data Export Interface (main data channel)"},
             {"port": 104, "protocol": "TCP", "reason": "DICOM imaging"},
         ],
         vpc_id="vpc-medical-01",
