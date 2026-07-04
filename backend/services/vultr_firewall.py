@@ -25,14 +25,16 @@ def apply_rules(policy: ContractB) -> dict:
     return {"status": "mock_applied", "vpc_id": policy.target_vpc_id}
 
 
-def retract_rules(policy: ContractB) -> dict:
+def retract_rules(device_id: str) -> dict:
     """
-    Remove firewall rules from Vultr Cloud Firewall for the target VPC.
-    Called by the Human Override endpoint.
+    Demo-reset, NOT a security rollback. Re-opens the temp attacker SSH rule so
+    the demo can be replayed from a clean 'before' state. Never touches the
+    admin SSH rule, never opens 0.0.0.0/0.
 
-    Expected return:
-        {"status": "retracted", "vpc_id": policy.target_vpc_id}
+    NOTE: device_id is currently decorative - single-device hackathon scope,
+    always acts on VULTR_FIREWALL_GROUP_ID from env. Wire real device routing
+    here if multi-device support is ever needed.
     """
     # TODO: Zain implements this using the Vultr Firewall REST API
-    print(f"[MOCK FIREWALL] Retracted rules on {policy.target_vpc_id}")
-    return {"status": "mock_retracted", "vpc_id": policy.target_vpc_id}
+    print(f"[MOCK FIREWALL] Restored temp attacker SSH rule for {device_id}")
+    return {"status": "mock_retracted", "device_id": device_id}
