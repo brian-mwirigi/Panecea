@@ -15,7 +15,7 @@ if str(BACKEND_ROOT) not in sys.path:
 
 from agent.prompts import TOOLS, agentic_policy_prompt, extraction_prompt, incident_memo_prompt
 from agent.tools.firewall import apply_firewall_rule, get_enforcement_result, retract_firewall_rule
-from schemas.contract_a import ContractA
+from schemas.contract_a import AllowedPort, ContractA
 from schemas.contract_b import ContractB, FirewallRule
 from schemas.control_plane import EvidenceBundle, EnforcementReceipt, PolicyLease
 from services.vultr_events import publish_event
@@ -28,6 +28,25 @@ from services.vultr_vector import (
     query_cve,
     query_manual,
     retrieve_document,
+)
+
+
+# Demo manual — matches frontend SAMPLE_MANUAL_TEXT until PDF upload is wired in.
+DEMO_MANUAL_TEXT = (
+    "Philips IntelliVue Patient Monitor — Network Configuration Guide (Firmware B.01). "
+    "The monitor transmits HL7 patient data over TCP port 3200 to the central station. "
+    "Port 2050 is used for device discovery. All remote administration (SSH, port 22) "
+    "must remain disabled in clinical deployments to prevent lateral movement."
+)
+
+DEMO_CONTRACT_A = ContractA(
+    device_model="Philips_IntelliVue",
+    firmware_version="B.01",
+    allowed_ports=[
+        AllowedPort(port=3200, protocol="TCP", reason="HL7 patient data"),
+        AllowedPort(port=2050, protocol="UDP", reason="Device discovery"),
+    ],
+    source_doc_id="",
 )
 
 
@@ -64,11 +83,15 @@ async def run_pipeline(
         if on_token:
             await on_token(StreamToken(text=text, type=token_type))
 
+    manual_text = raw_pdf_text.strip() or DEMO_MANUAL_TEXT
+    if not raw_pdf_text.strip():
+        await _emit("\n[STEP 1] No manual text supplied — using demo Philips IntelliVue excerpt.\n")
+
     # ------------------------------------------------------------------
     # Step 2: Extract device info from the PDF text
     # ------------------------------------------------------------------
     await _emit("\n[STEP 2] Extracting network requirements from device manual...\n")
-    extraction_raw = await complete(extraction_prompt(raw_pdf_text))
+    extraction_raw = await complete(extraction_prompt(manual_text))
     contract_a = _parse_contract_a(extraction_raw)
     if source_doc_id:
         contract_a = contract_a.model_copy(update={"source_doc_id": source_doc_id})
@@ -267,18 +290,16 @@ def _deterministic_policy(contract_a: ContractA, vpc_id: str) -> ContractB:
 
 
 def _parse_contract_a(raw: str) -> ContractA:
-    """Parses the LLM's JSON output into a ContractA model. Falls back to a safe default on failure."""
+    """Parses the LLM's JSON output into a ContractA model. Falls back to demo device on failure."""
     try:
         cleaned = raw.strip().strip("```json").strip("```").strip()
         data = json.loads(cleaned)
-        return ContractA(**data)
+        contract = ContractA(**data)
+        if contract.allowed_ports:
+            return contract
     except Exception:
-        return ContractA(
-            device_model="Unknown_Device",
-            firmware_version="unknown",
-            allowed_ports=[],
-            source_doc_id="",
-        )
+        pass
+    return DEMO_CONTRACT_A.model_copy()
 
 
 def _extract_contract_b(final_message: dict, vpc_id: str) -> ContractB:

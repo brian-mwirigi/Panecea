@@ -21,6 +21,15 @@ from schemas.contract_a import ContractA
 DEFAULT_BASE_URL = "https://api.vultrinference.com/v1/vector_store"
 
 
+def _vector_store_api_key() -> str:
+    """Vector store collections are scoped to the main Vultr account API key, not inference key."""
+    return os.getenv("VULTR_API_KEY", "") or os.getenv("VULTR_INFERENCE_API_KEY", "")
+
+
+def _vector_store_base_url() -> str:
+    return (os.getenv("VULTR_VECTOR_STORE_URL") or DEFAULT_BASE_URL).rstrip("/")
+
+
 class VultrVectorStoreError(RuntimeError):
     """Raised when managed Vector Store ingestion cannot be completed."""
 
@@ -89,8 +98,8 @@ class VultrVectorStore:
         timeout: float | None = None,
         client: httpx.AsyncClient | None = None,
     ) -> None:
-        self.api_key = api_key or os.getenv("VULTR_INFERENCE_API_KEY", "")
-        self.base_url = (base_url or os.getenv("VULTR_VECTOR_STORE_URL") or DEFAULT_BASE_URL).rstrip("/")
+        self.api_key = api_key or _vector_store_api_key()
+        self.base_url = (base_url or _vector_store_base_url()).rstrip("/")
         self.collection_id = collection_id or os.getenv("VULTR_VECTOR_COLLECTION_ID", "")
         self.collection_name = collection_name or os.getenv("VULTR_VECTOR_COLLECTION_NAME", "panacea-manuals")
         self.timeout = timeout or float(os.getenv("VULTR_VECTOR_TIMEOUT", "30"))
