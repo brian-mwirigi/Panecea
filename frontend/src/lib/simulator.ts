@@ -172,26 +172,47 @@ export function seedMemos(devices: Device[], count = 3): IncidentMemo[] {
   ).map((m, i) => ({ ...m, created_at: Date.now() - (i + 1) * 90_000 }));
 }
 
-/** Build a rolling threat/port-activity time series (last N minutes). */
+const fmtClock = (d: Date) =>
+  `${d.getHours().toString().padStart(2, "0")}:${d.getMinutes().toString().padStart(2, "0")}`;
+
+/**
+ * Organic-looking traffic for a given minute. Uses layered sine waves so
+ * consecutive points connect into a smooth curve (instead of random noise),
+ * plus a small jitter. `blockedBoost` lets real firewall DENY decisions spike
+ * the blocked line so the chart reflects actual agent actions.
+ */
+function activityFor(minuteIndex: number, blockedBoost = 0) {
+  const allowed =
+    17 + Math.sin(minuteIndex / 4) * 7 + Math.sin(minuteIndex / 13) * 3 + rand(-1.2, 1.2);
+  const blocked =
+    1.6 + Math.sin(minuteIndex / 6) * 1.4 + Math.sin(minuteIndex / 17) * 0.8 + rand(-0.4, 0.4);
+  return {
+    allowed: Math.max(4, Math.round(allowed)),
+    blocked: Math.max(0, Math.round(blocked)) + blockedBoost * 3,
+    anomalies: 0,
+  };
+}
+
+/** Build a rolling network-activity time series (last N minutes). */
 export function seedThreatSeries(points = 24): ThreatPoint[] {
+  const nowMin = Math.floor(Date.now() / 60_000);
   return Array.from({ length: points }, (_, i) => {
-    const d = new Date(Date.now() - (points - 1 - i) * 60_000);
+    const minuteIndex = nowMin - (points - 1 - i);
     return {
-      time: `${d.getHours().toString().padStart(2, "0")}:${d.getMinutes().toString().padStart(2, "0")}`,
-      blocked: randInt(0, 6),
-      allowed: randInt(8, 26),
-      anomalies: randInt(0, 3),
+      time: fmtClock(new Date(minuteIndex * 60_000)),
+      ...activityFor(minuteIndex),
     };
   });
 }
 
-/** Next point to append to the threat series. */
-export function nextThreatPoint(): ThreatPoint {
-  const d = new Date();
+/**
+ * Next point to append to the series. Pass the number of DENY rules from a
+ * fresh Contract B so a real lockdown visibly bumps the blocked line.
+ */
+export function nextThreatPoint(blockedBoost = 0): ThreatPoint {
+  const nowMin = Math.floor(Date.now() / 60_000);
   return {
-    time: `${d.getHours().toString().padStart(2, "0")}:${d.getMinutes().toString().padStart(2, "0")}`,
-    blocked: randInt(0, 6),
-    allowed: randInt(8, 26),
-    anomalies: randInt(0, 3),
+    time: fmtClock(new Date()),
+    ...activityFor(nowMin, blockedBoost),
   };
 }
