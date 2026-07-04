@@ -80,12 +80,15 @@ async def run_pipeline(
     # Step 5: Store the extracted manual in Vultr Vector Store
     # ------------------------------------------------------------------
     await _emit("\n[STEP 5] Chunking manual and storing Contract A in Vultr Vector Store...\n")
-    ingestion = await ingest_manual(raw_pdf_text, contract_a)
-    contract_a = contract_a.model_copy(update={"source_doc_id": ingestion.source_doc_id})
-    await _emit(
-        f"[STEP 5 DONE] Stored {ingestion.chunk_count} chunks in Vultr collection "
-        f"{ingestion.collection_id}; source vector {ingestion.source_doc_id}.\n"
-    )
+    try:
+        ingestion = await ingest_manual(raw_pdf_text, contract_a)
+        contract_a = contract_a.model_copy(update={"source_doc_id": ingestion.source_doc_id})
+        await _emit(
+            f"[STEP 5 DONE] Stored {ingestion.chunk_count} chunks in Vultr collection "
+            f"{ingestion.collection_id}; source vector {ingestion.source_doc_id}.\n"
+        )
+    except Exception as e:
+        await _emit(f"[STEP 5 WARN] Vector store unavailable — continuing without storage: {e}\n")
 
     # ------------------------------------------------------------------
     # Extract ContractB from the last apply_firewall_rule tool call.
