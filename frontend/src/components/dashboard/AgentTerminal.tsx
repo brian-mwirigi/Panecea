@@ -80,7 +80,15 @@ export function AgentTerminal({ logs, running, onRun }: AgentTerminalProps) {
                     [{line.step}]
                   </span>
                 )}
-                <span className={style.color}>{line.text}</span>
+                <span
+                  className={
+                    line.dim
+                      ? "whitespace-pre-wrap italic text-white/35"
+                      : `whitespace-pre-wrap ${style.color}`
+                  }
+                >
+                  {line.text}
+                </span>
               </motion.div>
             );
           })}

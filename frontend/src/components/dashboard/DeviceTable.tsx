@@ -31,7 +31,7 @@ export function DeviceTable({ devices, onOverride }: DeviceTableProps) {
             <tr className="text-left text-[11px] uppercase tracking-wider text-white/35">
               <th className="px-3 py-2 font-medium">Device</th>
               <th className="px-3 py-2 font-medium">VPC</th>
-              <th className="px-3 py-2 font-medium">Ports</th>
+              <th className="px-3 py-2 font-medium">Ports / Firewall</th>
               <th className="px-3 py-2 font-medium">Status</th>
               <th className="px-3 py-2 text-right font-medium">Control</th>
             </tr>
@@ -56,14 +56,28 @@ export function DeviceTable({ devices, onOverride }: DeviceTableProps) {
                   </td>
                   <td className="px-3 py-2.5">
                     <div className="flex flex-wrap gap-1">
-                      {d.ports.map((p) => (
-                        <span
-                          key={p}
-                          className="rounded bg-white/5 px-1.5 py-0.5 font-mono text-[10px] text-white/50 ring-1 ring-white/10"
-                        >
-                          {p}
-                        </span>
-                      ))}
+                      {d.firewallRules?.length
+                        ? d.firewallRules.map((r, i) => (
+                            <span
+                              key={`${r.port}-${i}`}
+                              title={`Firewall: ${r.action} port ${r.port}`}
+                              className={`rounded px-1.5 py-0.5 font-mono text-[10px] ring-1 ${
+                                r.action === "ALLOW"
+                                  ? "bg-accent-2/10 text-accent-2 ring-accent-2/25"
+                                  : "bg-danger/10 text-danger ring-danger/25"
+                              }`}
+                            >
+                              {r.port} {r.action === "ALLOW" ? "OPEN" : "BLOCKED"}
+                            </span>
+                          ))
+                        : d.ports.map((p) => (
+                            <span
+                              key={p}
+                              className="rounded bg-white/5 px-1.5 py-0.5 font-mono text-[10px] text-white/50 ring-1 ring-white/10"
+                            >
+                              {p}
+                            </span>
+                          ))}
                     </div>
                   </td>
                   <td className="px-3 py-2.5">
