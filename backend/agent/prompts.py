@@ -11,8 +11,12 @@ Rules you must follow:
 - Confidence scores must be integers between 0 and 100.
 - Port actions must be exactly "ALLOW" or "DENY".
 - When you need information about a CVE or need to enforce a firewall rule, use the tools provided.
+- Always call retrieve_document first to ground your understanding in the device manual.
 - Always call check_cve before making a firewall decision.
-- Always call apply_firewall_rule after deciding on a policy.
+- If a CVE flags a port that the manual also requires, call retrieve_document again to confirm
+  whether the manual explicitly requires that port or merely mentions it — this determines ALLOW vs DENY.
+- Always call apply_firewall_rule as the final step after deciding on a policy.
+- Every firewall rule you generate must cite the source_chunk_id from the document retrieval.
 """
 
 # ---------------------------------------------------------------------------
@@ -20,6 +24,39 @@ Rules you must follow:
 # ---------------------------------------------------------------------------
 
 TOOLS = [
+    {
+        "type": "function",
+        "function": {
+            "name": "retrieve_document",
+            "description": (
+                "Search the Vultr Vector Store for relevant chunks from the medical device manual. "
+                "Call this first to ground your port and protocol decisions in the actual document. "
+                "Call again with a more specific query if a CVE flags a port you need to verify."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "query": {
+                        "type": "string",
+                        "description": (
+                            "Natural language search query, e.g. "
+                            "'port 3200 HL7 network requirements' or "
+                            "'port 22 SSH access Philips IntelliVue'"
+                        ),
+                    },
+                    "device_model": {
+                        "type": "string",
+                        "description": "Filter results to this device model, e.g. Philips_IntelliVue",
+                    },
+                    "top_k": {
+                        "type": "integer",
+                        "description": "Number of document chunks to return (default 3).",
+                    },
+                },
+                "required": ["query", "device_model"],
+            },
+        },
+    },
     {
         "type": "function",
         "function": {
@@ -111,13 +148,19 @@ def agentic_policy_prompt(device_model: str, firmware_version: str, allowed_port
 
 Device: {device_model}
 Firmware: {firmware_version}
-Ports required by the device manual:
+Ports reported by the ingestion module:
 {ports_str}
 
-Your task:
-1. Call check_cve to identify any known vulnerabilities for this device and firmware.
-2. Use the CVE results plus the port list to generate a zero-trust firewall policy.
-3. Call apply_firewall_rule to enforce the policy on VPC {vpc_id}.
+Your task — execute in this order:
+1. Call retrieve_document to pull the relevant sections of the device manual and confirm
+   which ports are genuinely required and why. Note the source_chunk_id for each port.
+2. Call check_cve to identify known vulnerabilities for this device and firmware.
+3. If the CVE report flags a port that also appears in the manual (a conflict), call
+   retrieve_document again with a targeted query to determine whether the manual makes
+   that port mandatory or merely mentions it. Use this to decide ALLOW vs DENY.
+4. Generate the zero-trust firewall policy. Every ALLOW rule must include the
+   source_chunk_id from step 1 or 3 that justifies it.
+5. Call apply_firewall_rule to enforce the policy on VPC {vpc_id}.
 
 Think carefully before each tool call. The hospital network is live.""",
         },

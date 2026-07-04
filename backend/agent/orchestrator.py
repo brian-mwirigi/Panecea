@@ -15,7 +15,7 @@ from agent.tools.firewall import apply_firewall_rule, retract_firewall_rule
 from schemas.contract_a import ContractA
 from schemas.contract_b import ContractB, FirewallRule
 from services.vultr_inference import StreamToken, complete, run_agentic_loop
-from services.vultr_vector import ingest_manual
+from services.vultr_vector import format_chunks_for_llm, ingest_manual, query_manual
 
 
 async def run_pipeline(
@@ -80,12 +80,15 @@ async def run_pipeline(
     # Step 5: Store the extracted manual in Vultr Vector Store
     # ------------------------------------------------------------------
     await _emit("\n[STEP 5] Chunking manual and storing Contract A in Vultr Vector Store...\n")
-    ingestion = await ingest_manual(raw_pdf_text, contract_a)
-    contract_a = contract_a.model_copy(update={"source_doc_id": ingestion.source_doc_id})
-    await _emit(
-        f"[STEP 5 DONE] Stored {ingestion.chunk_count} chunks in Vultr collection "
-        f"{ingestion.collection_id}; source vector {ingestion.source_doc_id}.\n"
-    )
+    try:
+        ingestion = await ingest_manual(raw_pdf_text, contract_a)
+        contract_a = contract_a.model_copy(update={"source_doc_id": ingestion.source_doc_id})
+        await _emit(
+            f"[STEP 5 DONE] Stored {ingestion.chunk_count} chunks in Vultr collection "
+            f"{ingestion.collection_id}; source vector {ingestion.source_doc_id}.\n"
+        )
+    except Exception as e:
+        await _emit(f"[STEP 5 WARN] Vector store unavailable — continuing without storage: {e}\n")
 
     # ------------------------------------------------------------------
     # Extract ContractB from the last apply_firewall_rule tool call.
@@ -120,6 +123,14 @@ def _tool_executor(tool_name: str, arguments: dict) -> str:
     Routes Nemotron's tool call requests to the correct Python function.
     This is the bridge between the LLM and the actual tool implementations.
     """
+    if tool_name == "retrieve_document":
+        chunks = query_manual(
+            query=arguments.get("query", ""),
+            device_model=arguments.get("device_model", ""),
+            top_k=arguments.get("top_k", 3),
+        )
+        return format_chunks_for_llm(chunks)
+
     if tool_name == "check_cve":
         result = mock_cve_lookup(
             device_model=arguments.get("device_model", ""),
