@@ -1,7 +1,7 @@
 "use client";
 
 import { useState } from "react";
-import { LayoutDashboard, TerminalSquare, Cpu } from "lucide-react";
+import { LayoutDashboard, TerminalSquare, Cpu, UploadCloud } from "lucide-react";
 import { useSimulatedStream } from "@/hooks/useSimulatedStream";
 import { Header } from "@/components/dashboard/Header";
 import { TabNav, type TabDef } from "@/components/dashboard/TabNav";
@@ -12,10 +12,12 @@ import { AgentTerminal } from "@/components/dashboard/AgentTerminal";
 import { IncidentMemo } from "@/components/dashboard/IncidentMemo";
 import { HumanOverride } from "@/components/dashboard/HumanOverride";
 import { DeviceTable } from "@/components/dashboard/DeviceTable";
+import { ManualUpload } from "@/components/dashboard/ManualUpload";
 
 const TABS: TabDef[] = [
   { id: "overview", label: "Overview", icon: LayoutDashboard },
   { id: "agent", label: "Live Agent", icon: TerminalSquare },
+  { id: "ingest", label: "Ingest", icon: UploadCloud },
   { id: "fleet", label: "Devices", icon: Cpu },
 ];
 
@@ -28,10 +30,12 @@ export default function CommandCenter() {
     stats,
     autonomous,
     running,
+    uploading,
     dataMode,
     setAutonomous,
     runAgent,
     overrideDevice,
+    uploadManual,
   } = useSimulatedStream();
 
   const [tab, setTab] = useState("overview");
@@ -59,6 +63,19 @@ export default function CommandCenter() {
         </section>
       )}
 
+      {tab === "ingest" && (
+        <div className="grid gap-5 lg:grid-cols-[1.35fr_1fr]">
+          <ManualUpload
+            uploading={uploading}
+            onUpload={(file) => {
+              uploadManual(file);
+              setTab("agent");
+            }}
+          />
+          <IncidentMemo memos={memos} />
+        </div>
+      )}
+
       {tab === "fleet" && (
         <div className="flex flex-col gap-5">
           <HumanOverride autonomous={autonomous} onToggle={setAutonomous} />
@@ -66,7 +83,7 @@ export default function CommandCenter() {
         </div>
       )}
 
-      <footer className="mt-auto pt-2 text-center text-[11px] text-white/25">
+      <footer className="mt-auto pt-2 text-center font-mono text-[11px] text-faint">
         Panacea v2 · Command Center · live agent reasoning &amp; incident memos
         when the backend is connected; device vitals are simulated
       </footer>

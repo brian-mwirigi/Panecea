@@ -19,6 +19,12 @@ export const config = {
   /** WebSocket endpoint that streams live agent reasoning tokens. */
   wsUrl:
     process.env.NEXT_PUBLIC_WS_URL ?? "ws://localhost:8000/ws/agent-stream",
+
+  /**
+   * Optional operator bearer token for privileged endpoints (manual ingestion).
+   * Only required when the backend runs in strict/OIDC mode; blank otherwise.
+   */
+  operatorToken: process.env.NEXT_PUBLIC_OPERATOR_TOKEN ?? "",
 } as const;
 
 /**
@@ -29,6 +35,8 @@ export const config = {
  */
 export const endpoints = {
   agentRun: "/backend/api/v1/agent/run",
+  /** Multipart PDF manual ingestion (file + vpc_id) → streams + returns Contract B. */
+  manualsRun: "/backend/api/v1/manuals/run",
   policy: (deviceId: string) => `/backend/api/v1/policy/${deviceId}`,
   agentStream: config.wsUrl,
 } as const;

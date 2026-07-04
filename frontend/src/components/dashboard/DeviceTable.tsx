@@ -28,12 +28,12 @@ export function DeviceTable({ devices, onOverride }: DeviceTableProps) {
       <div className="slim-scroll flex-1 overflow-x-auto px-2 pb-2">
         <table className="w-full border-collapse text-sm">
           <thead>
-            <tr className="text-left text-[11px] uppercase tracking-wider text-white/35">
-              <th className="px-3 py-2 font-medium">Device</th>
-              <th className="px-3 py-2 font-medium">VPC</th>
-              <th className="px-3 py-2 font-medium">Ports / Firewall</th>
-              <th className="px-3 py-2 font-medium">Status</th>
-              <th className="px-3 py-2 text-right font-medium">Control</th>
+            <tr className="text-left">
+              <th className="section-label px-3 py-2.5">Device</th>
+              <th className="section-label px-3 py-2.5">VPC</th>
+              <th className="section-label px-3 py-2.5">Ports / Firewall</th>
+              <th className="section-label px-3 py-2.5">Status</th>
+              <th className="section-label px-3 py-2.5 text-right">Control</th>
             </tr>
           </thead>
           <tbody>
@@ -43,15 +43,15 @@ export function DeviceTable({ devices, onOverride }: DeviceTableProps) {
                 <motion.tr
                   key={d.id}
                   layout
-                  className="border-t border-white/5 transition hover:bg-white/[0.03]"
+                  className="border-t border-hairline transition hover:bg-surface-2"
                 >
                   <td className="px-3 py-2.5">
-                    <div className="font-medium text-white/85">{d.model}</div>
-                    <div className="font-mono text-[10px] text-white/35">
+                    <div className="font-medium text-foreground">{d.model}</div>
+                    <div className="font-mono text-[10px] text-faint">
                       fw {d.firmware}
                     </div>
                   </td>
-                  <td className="px-3 py-2.5 font-mono text-xs text-white/50">
+                  <td className="px-3 py-2.5 font-mono text-xs text-muted">
                     {d.vpc_id}
                   </td>
                   <td className="px-3 py-2.5">
@@ -73,7 +73,7 @@ export function DeviceTable({ devices, onOverride }: DeviceTableProps) {
                         : d.ports.map((p) => (
                             <span
                               key={p}
-                              className="rounded bg-white/5 px-1.5 py-0.5 font-mono text-[10px] text-white/50 ring-1 ring-white/10"
+                              className="rounded bg-surface-3 px-1.5 py-0.5 font-mono text-[10px] text-muted ring-1 ring-hairline"
                             >
                               {p}
                             </span>
@@ -93,7 +93,7 @@ export function DeviceTable({ devices, onOverride }: DeviceTableProps) {
                       className={`inline-flex items-center gap-1 rounded-lg px-2.5 py-1 text-[11px] font-medium ring-1 transition ${
                         d.status === "override"
                           ? "bg-warn/15 text-warn ring-warn/30 hover:bg-warn/25"
-                          : "bg-white/5 text-white/60 ring-white/10 hover:bg-white/10 hover:text-white/80"
+                          : "bg-surface-2 text-muted ring-hairline hover:bg-surface-3 hover:text-foreground"
                       }`}
                     >
                       <Power className="h-3 w-3" />

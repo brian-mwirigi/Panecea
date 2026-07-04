@@ -1,29 +1,49 @@
 @import "tailwindcss";
 
 /* ------------------------------------------------------------------ */
-/* Panacea Command Center — design tokens                             */
+/* Panacea Command Center — design system                             */
+/* Composio-inspired: near-black canvas, brightness-step elevation,   */
+/* a single electric-blue voltage, compact radii, mono section labels.*/
 /* ------------------------------------------------------------------ */
 
 :root {
-  --background: #05070f;
-  --foreground: #e7ecf5;
+  /* Canvas + elevation ladder (brightness steps, not shadows). */
+  --background: #0f0f0f;
+  --surface: #181818;
+  --surface-2: #222222;
+  --surface-3: #2a2a2a;
+  --recessed: #000000;
 
-  /* Brand / accent palette (teal → cyan → violet immune-system feel). */
-  --accent: #22d3ee;
-  --accent-2: #34d399;
-  --accent-3: #a78bfa;
+  --foreground: #ededed;
+  --muted: #a0a0a0;
+  --faint: #6b6b6b;
+
+  /* Hairlines. */
+  --border: rgba(255, 255, 255, 0.08);
+  --border-strong: rgba(255, 255, 255, 0.14);
+
+  /* Single brand voltage + a readable interactive tint of it. */
+  --primary: #0007cd;
+  --accent: #5b6cff;
+  --accent-3: #8a90c9;
+
+  /* Semantic (domain needs allow/deny + secure/threat). */
+  --accent-2: #3ecf8e;
   --danger: #fb7185;
-  --warn: #fbbf24;
-
-  /* Glass surface tokens. */
-  --glass-bg: rgba(255, 255, 255, 0.04);
-  --glass-border: rgba(255, 255, 255, 0.1);
-  --glass-hi: rgba(255, 255, 255, 0.18);
+  --warn: #f5b544;
 }
 
 @theme inline {
   --color-background: var(--background);
   --color-foreground: var(--foreground);
+  --color-surface: var(--surface);
+  --color-surface-2: var(--surface-2);
+  --color-surface-3: var(--surface-3);
+  --color-recessed: var(--recessed);
+  --color-hairline: var(--border);
+  --color-muted: var(--muted);
+  --color-faint: var(--faint);
+  --color-primary: var(--primary);
   --color-accent: var(--accent);
   --color-accent-2: var(--accent-2);
   --color-accent-3: var(--accent-3);
@@ -42,50 +62,75 @@ body {
   color: var(--foreground);
   font-family: var(--font-sans), system-ui, sans-serif;
   background-color: var(--background);
-  /* Subtle, restrained ambient glow behind the frosted glass. */
-  background-image:
-    radial-gradient(70rem 70rem at 15% -12%, rgba(34, 211, 238, 0.07), transparent 60%),
-    radial-gradient(60rem 60rem at 95% 4%, rgba(148, 163, 184, 0.05), transparent 55%);
+  /* One restrained blue spotlight glow up top, otherwise a flat canvas. */
+  background-image: radial-gradient(
+    52rem 32rem at 50% -14%,
+    rgba(0, 7, 205, 0.18),
+    transparent 70%
+  );
   background-attachment: fixed;
   -webkit-font-smoothing: antialiased;
 }
 
-/* Frosted glass surface. */
+/* ---- Surfaces: elevation via brightness steps, no drop shadows. ---- */
 .glass {
-  background: var(--glass-bg);
-  border: 1px solid var(--glass-border);
-  backdrop-filter: blur(18px) saturate(140%);
-  -webkit-backdrop-filter: blur(18px) saturate(140%);
-  box-shadow:
-    0 8px 40px -12px rgba(0, 0, 0, 0.6),
-    inset 0 1px 0 0 var(--glass-hi);
+  background: var(--surface);
+  border: 1px solid var(--border);
 }
 
 .glass-hover {
   transition:
-    transform 0.25s ease,
-    border-color 0.25s ease,
-    box-shadow 0.25s ease;
+    background-color 0.2s ease,
+    border-color 0.2s ease;
 }
-
 .glass-hover:hover {
-  transform: translateY(-2px);
-  border-color: rgba(34, 211, 238, 0.35);
-  box-shadow:
-    0 16px 50px -14px rgba(0, 0, 0, 0.7),
-    0 0 0 1px rgba(34, 211, 238, 0.15),
-    inset 0 1px 0 0 var(--glass-hi);
+  background: var(--surface-2);
+  border-color: var(--border-strong);
 }
 
-/* Subtle animated grid overlay used on hero panels. */
+/* Recessed surface for terminals / code (darkest step). */
+.recessed {
+  background: var(--recessed);
+  border: 1px solid var(--border);
+}
+
+/* Uppercase mono section label — the developer-tool dialect. */
+.section-label {
+  font-family: var(--font-mono), ui-monospace, monospace;
+  font-size: 11px;
+  font-weight: 500;
+  letter-spacing: 0.09em;
+  text-transform: uppercase;
+  color: var(--faint);
+}
+
+/* Radial blue spotlight behind hero/CTA anchors. */
+.spotlight {
+  position: relative;
+  isolation: isolate;
+}
+.spotlight::before {
+  content: "";
+  position: absolute;
+  inset: -1px;
+  z-index: -1;
+  background: radial-gradient(
+    30rem 14rem at 22% 0%,
+    rgba(0, 7, 205, 0.22),
+    transparent 65%
+  );
+  pointer-events: none;
+}
+
+/* Subtle grid overlay used on the telemetry / chart panes. */
 .grid-overlay {
   background-image:
-    linear-gradient(rgba(255, 255, 255, 0.04) 1px, transparent 1px),
-    linear-gradient(90deg, rgba(255, 255, 255, 0.04) 1px, transparent 1px);
+    linear-gradient(rgba(255, 255, 255, 0.035) 1px, transparent 1px),
+    linear-gradient(90deg, rgba(255, 255, 255, 0.035) 1px, transparent 1px);
   background-size: 28px 28px;
 }
 
-/* Custom slim scrollbar for terminal / feeds. */
+/* Slim scrollbar for terminal / feeds. */
 .slim-scroll::-webkit-scrollbar {
   width: 6px;
   height: 6px;
@@ -94,46 +139,25 @@ body {
   background: transparent;
 }
 .slim-scroll::-webkit-scrollbar-thumb {
-  background: rgba(255, 255, 255, 0.14);
+  background: rgba(255, 255, 255, 0.12);
   border-radius: 9999px;
 }
 .slim-scroll::-webkit-scrollbar-thumb:hover {
-  background: rgba(34, 211, 238, 0.4);
+  background: rgba(91, 108, 255, 0.5);
 }
 
 /* Live status pulse. */
 @keyframes pulse-ring {
   0% {
-    box-shadow: 0 0 0 0 rgba(52, 211, 153, 0.5);
+    box-shadow: 0 0 0 0 rgba(62, 207, 142, 0.5);
   }
   70% {
-    box-shadow: 0 0 0 8px rgba(52, 211, 153, 0);
+    box-shadow: 0 0 0 7px rgba(62, 207, 142, 0);
   }
   100% {
-    box-shadow: 0 0 0 0 rgba(52, 211, 153, 0);
+    box-shadow: 0 0 0 0 rgba(62, 207, 142, 0);
   }
 }
 .pulse-dot {
-  animation: pulse-ring 1.8s cubic-bezier(0.4, 0, 0.6, 1) infinite;
-}
-
-@keyframes sweep {
-  from {
-    transform: translateX(-100%);
-  }
-  to {
-    transform: translateX(100%);
-  }
-}
-.sweep::after {
-  content: "";
-  position: absolute;
-  inset: 0;
-  background: linear-gradient(
-    90deg,
-    transparent,
-    rgba(34, 211, 238, 0.08),
-    transparent
-  );
-  animation: sweep 3.5s ease-in-out infinite;
+  animation: pulse-ring 1.9s cubic-bezier(0.4, 0, 0.6, 1) infinite;
 }
