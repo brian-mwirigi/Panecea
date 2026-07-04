@@ -4,6 +4,7 @@ import { useMemo, useState } from "react";
 import { HeartPulse, ChevronDown } from "lucide-react";
 import { GlassCard, PanelHeader } from "./GlassCard";
 import { useHeartbeat } from "@/hooks/useHeartbeat";
+import { config } from "@/lib/config";
 import type { Device } from "@/lib/types";
 
 interface HeartbeatMonitorProps {
@@ -22,7 +23,7 @@ export function HeartbeatMonitor({ devices }: HeartbeatMonitorProps) {
     <GlassCard delay={0.1} className="flex h-full flex-col overflow-hidden">
       <PanelHeader
         title="Device Heartbeat Telemetry"
-        subtitle="Live vitals · simulated feed"
+        subtitle={config.useMock ? "Live vitals · simulated feed" : "Live device-twin telemetry"}
         icon={<HeartPulse className="h-4.5 w-4.5" />}
         action={
           devices.length > 0 && (

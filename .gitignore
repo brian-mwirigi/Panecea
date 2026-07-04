@@ -1,0 +1,43 @@
+<<<<<<< HEAD
+# Environment secrets — never commit
+.env
+backend/.env
+=======
+# Environment / secrets — NEVER commit real API keys
+.env
+infra/zain/.env
+>>>>>>> bc63691 (feat: zain vultr firewall execution module (apply_rules/retract_rules))
+
+# Python
+__pycache__/
+*.py[cod]
+<<<<<<< HEAD
+*.pyo
+.venv/
+venv/
+env/
+*.egg-info/
+dist/
+build/
+.pytest_cache/
+
+# Node
+node_modules/
+.next/
+out/
+
+# OS
+.DS_Store
+Thumbs.db
+=======
+*.egg-info/
+.venv/
+venv/
+env/
+
+# OS / editor cruft
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/
+>>>>>>> bc63691 (feat: zain vultr firewall execution module (apply_rules/retract_rules))

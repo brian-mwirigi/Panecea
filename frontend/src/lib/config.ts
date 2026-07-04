@@ -25,6 +25,8 @@ export const config = {
    * Only required when the backend runs in strict/OIDC mode; blank otherwise.
    */
   operatorToken: process.env.NEXT_PUBLIC_OPERATOR_TOKEN ?? "",
+  /** Real Vultr VPC targeted by the demo agent. */
+  vpcId: process.env.NEXT_PUBLIC_VPC_ID ?? "vpc-medical-01",
 } as const;
 
 /**

@@ -7,6 +7,7 @@ import path from "path";
 const backend = process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:8000";
 
 const nextConfig: NextConfig = {
+  output: "standalone",
   // Pin the workspace root to this app. Without this, a stray lockfile in a
   // parent directory can make Next infer the wrong root and break bundling.
   turbopack: {
