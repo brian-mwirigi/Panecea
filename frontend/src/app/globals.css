@@ -1,0 +1,140 @@
+@import "tailwindcss";
+
+/* ------------------------------------------------------------------ */
+/* Panacea Command Center — design tokens                             */
+/* ------------------------------------------------------------------ */
+
+:root {
+  --background: #05070f;
+  --foreground: #e7ecf5;
+
+  /* Brand / accent palette (teal → cyan → violet immune-system feel). */
+  --accent: #22d3ee;
+  --accent-2: #34d399;
+  --accent-3: #a78bfa;
+  --danger: #fb7185;
+  --warn: #fbbf24;
+
+  /* Glass surface tokens. */
+  --glass-bg: rgba(255, 255, 255, 0.04);
+  --glass-border: rgba(255, 255, 255, 0.1);
+  --glass-hi: rgba(255, 255, 255, 0.18);
+}
+
+@theme inline {
+  --color-background: var(--background);
+  --color-foreground: var(--foreground);
+  --color-accent: var(--accent);
+  --color-accent-2: var(--accent-2);
+  --color-accent-3: var(--accent-3);
+  --color-danger: var(--danger);
+  --color-warn: var(--warn);
+  --font-sans: var(--font-geist-sans);
+  --font-mono: var(--font-geist-mono);
+}
+
+html,
+body {
+  min-height: 100%;
+}
+
+body {
+  color: var(--foreground);
+  font-family: var(--font-sans), system-ui, sans-serif;
+  background-color: var(--background);
+  /* Layered ambient aurora behind the frosted glass. */
+  background-image:
+    radial-gradient(60rem 60rem at 12% -10%, rgba(34, 211, 238, 0.16), transparent 60%),
+    radial-gradient(50rem 50rem at 100% 0%, rgba(167, 139, 250, 0.16), transparent 55%),
+    radial-gradient(55rem 55rem at 50% 120%, rgba(52, 211, 153, 0.12), transparent 60%);
+  background-attachment: fixed;
+  -webkit-font-smoothing: antialiased;
+}
+
+/* Frosted glass surface. */
+.glass {
+  background: var(--glass-bg);
+  border: 1px solid var(--glass-border);
+  backdrop-filter: blur(18px) saturate(140%);
+  -webkit-backdrop-filter: blur(18px) saturate(140%);
+  box-shadow:
+    0 8px 40px -12px rgba(0, 0, 0, 0.6),
+    inset 0 1px 0 0 var(--glass-hi);
+}
+
+.glass-hover {
+  transition:
+    transform 0.25s ease,
+    border-color 0.25s ease,
+    box-shadow 0.25s ease;
+}
+
+.glass-hover:hover {
+  transform: translateY(-2px);
+  border-color: rgba(34, 211, 238, 0.35);
+  box-shadow:
+    0 16px 50px -14px rgba(0, 0, 0, 0.7),
+    0 0 0 1px rgba(34, 211, 238, 0.15),
+    inset 0 1px 0 0 var(--glass-hi);
+}
+
+/* Subtle animated grid overlay used on hero panels. */
+.grid-overlay {
+  background-image:
+    linear-gradient(rgba(255, 255, 255, 0.04) 1px, transparent 1px),
+    linear-gradient(90deg, rgba(255, 255, 255, 0.04) 1px, transparent 1px);
+  background-size: 28px 28px;
+}
+
+/* Custom slim scrollbar for terminal / feeds. */
+.slim-scroll::-webkit-scrollbar {
+  width: 6px;
+  height: 6px;
+}
+.slim-scroll::-webkit-scrollbar-track {
+  background: transparent;
+}
+.slim-scroll::-webkit-scrollbar-thumb {
+  background: rgba(255, 255, 255, 0.14);
+  border-radius: 9999px;
+}
+.slim-scroll::-webkit-scrollbar-thumb:hover {
+  background: rgba(34, 211, 238, 0.4);
+}
+
+/* Live status pulse. */
+@keyframes pulse-ring {
+  0% {
+    box-shadow: 0 0 0 0 rgba(52, 211, 153, 0.5);
+  }
+  70% {
+    box-shadow: 0 0 0 8px rgba(52, 211, 153, 0);
+  }
+  100% {
+    box-shadow: 0 0 0 0 rgba(52, 211, 153, 0);
+  }
+}
+.pulse-dot {
+  animation: pulse-ring 1.8s cubic-bezier(0.4, 0, 0.6, 1) infinite;
+}
+
+@keyframes sweep {
+  from {
+    transform: translateX(-100%);
+  }
+  to {
+    transform: translateX(100%);
+  }
+}
+.sweep::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  background: linear-gradient(
+    90deg,
+    transparent,
+    rgba(34, 211, 238, 0.08),
+    transparent
+  );
+  animation: sweep 3.5s ease-in-out infinite;
+}
