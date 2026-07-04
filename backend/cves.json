@@ -1,0 +1,62 @@
+[
+  {
+    "cve_id": "CVE-2020-16222",
+    "device_model": "Philips_IntelliVue",
+    "affected_versions": "IntelliVue patient monitors MX100, MX400-MX850, MP2-MP90, IntelliVue X2/X3 (Version N and prior); Patient Information Center iX B.02/C.02/C.03; PerformanceBridge Focal Point A.01",
+    "port": null,
+    "protocol": null,
+    "cwe": "CWE-287 Improper Authentication",
+    "severity": "HIGH",
+    "cvss_v3_score": 8.8,
+    "cvss_v3_vector": "CVSS:3.1/AV:A/AC:L/PR:N/UI:N/S:U/C:H/I:H/A:H",
+    "description": "The device does not sufficiently prove an identity claim over the adjacent network, allowing an attacker on the hospital network segment to impersonate a trusted actor and read/modify/deny monitor data.",
+    "mitigation": "Physically or logically isolate the patient-monitoring network segment from the general hospital LAN; restrict adjacent-network access to authorized hosts only (network-layer micro-segmentation, not a device-side patch).",
+    "source": "CISA ICSMA-20-254-01 / NVD CVE-2020-16222",
+    "synthetic_demo": false
+  },
+  {
+    "cve_id": "CVE-2020-16220",
+    "device_model": "Philips_IntelliVue",
+    "affected_versions": "IntelliVue patient monitors MX100, MX400-MX850, MP2-MP90, IntelliVue X2/X3 (Version N and prior); Patient Information Center iX B.02/C.02/C.03; PerformanceBridge Focal Point A.01",
+    "port": null,
+    "protocol": null,
+    "cwe": "CWE-1286 Improper Validation of Syntactic Correctness of Input",
+    "severity": "MEDIUM",
+    "cvss_v3_score": 4.3,
+    "cvss_v3_vector": "CVSS:3.1/AV:A/AC:L/PR:N/UI:N/S:U/C:N/I:N/A:L",
+    "description": "Malformed input to the certificate enrollment service from an adjacent network can crash the service, blocking new device enrollment (monitoring of already-enrolled devices continues).",
+    "mitigation": "Restrict adjacent-network reachability to the enrollment service; monitor for repeated malformed enrollment attempts.",
+    "source": "CISA ICSMA-20-254-01 / NVD CVE-2020-16220",
+    "synthetic_demo": false
+  },
+  {
+    "cve_id": "CVE-2018-15473",
+    "device_model": "generic_embedded_linux",
+    "affected_versions": "OpenSSH through 7.7 (bundled sshd on many embedded/IIoT network stacks)",
+    "port": 22,
+    "protocol": "TCP",
+    "cwe": "CWE-362 Concurrent Execution using Shared Resource with Improper Synchronization",
+    "severity": "MEDIUM",
+    "cvss_v3_score": 5.3,
+    "cvss_v3_vector": "CVSS:3.1/AV:N/AC:L/PR:N/UI:N/S:U/C:L/I:N/A:N",
+    "description": "OpenSSH through 7.7 allows remote username enumeration via inconsistent authentication-failure timing, aiding follow-on credential attacks against any exposed management SSH service.",
+    "mitigation": "Deny inbound port 22 at the network layer for devices that do not require interactive administrative access from the hospital network.",
+    "source": "NVD CVE-2018-15473",
+    "synthetic_demo": false
+  },
+  {
+    "cve_id": "CVE-2020-15778",
+    "device_model": "generic_embedded_linux",
+    "affected_versions": "OpenSSH through 8.3p1 (scp client)",
+    "port": 22,
+    "protocol": "TCP",
+    "cwe": "CWE-78 OS Command Injection",
+    "severity": "HIGH",
+    "cvss_v3_score": 7.4,
+    "cvss_v3_vector": "CVSS:3.1/AV:A/AC:L/PR:L/UI:R/S:U/C:H/I:H/A:H",
+    "description": "scp allows command injection via shell metacharacters in a filename/destination argument. Marked DISPUTED by the OpenSSH vendor, who considers the behavior intentional, but it remains a tracked NVD entry and a real risk if scp is scripted against untrusted filenames.",
+    "mitigation": "Deny inbound/outbound port 22 at the network layer rather than relying on client-side filename sanitization.",
+    "source": "NVD CVE-2020-15778 (status: disputed by vendor)",
+    "synthetic_demo": false
+  }
+]
