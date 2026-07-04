@@ -21,6 +21,15 @@ from schemas.contract_a import ContractA
 DEFAULT_BASE_URL = "https://api.vultrinference.com/v1/vector_store"
 
 
+def _vector_store_api_key() -> str:
+    """Vector store collections are scoped to the main Vultr account API key, not inference key."""
+    return os.getenv("VULTR_API_KEY", "") or os.getenv("VULTR_INFERENCE_API_KEY", "")
+
+
+def _vector_store_base_url() -> str:
+    return (os.getenv("VULTR_VECTOR_STORE_URL") or DEFAULT_BASE_URL).rstrip("/")
+
+
 class VultrVectorStoreError(RuntimeError):
     """Raised when managed Vector Store ingestion cannot be completed."""
 
@@ -89,8 +98,8 @@ class VultrVectorStore:
         timeout: float | None = None,
         client: httpx.AsyncClient | None = None,
     ) -> None:
-        self.api_key = api_key or os.getenv("VULTR_INFERENCE_API_KEY", "")
-        self.base_url = (base_url or os.getenv("VULTR_VECTOR_STORE_URL") or DEFAULT_BASE_URL).rstrip("/")
+        self.api_key = api_key or _vector_store_api_key()
+        self.base_url = (base_url or _vector_store_base_url()).rstrip("/")
         self.collection_id = collection_id or os.getenv("VULTR_VECTOR_COLLECTION_ID", "")
         self.collection_name = collection_name or os.getenv("VULTR_VECTOR_COLLECTION_NAME", "panacea-manuals")
         self.timeout = timeout or float(os.getenv("VULTR_VECTOR_TIMEOUT", "30"))
@@ -112,13 +121,16 @@ class VultrVectorStore:
 
     async def _request(self, method: str, url: str, **kwargs: Any) -> httpx.Response:
         last_error: Exception | None = None
+        headers = self._headers.copy()
+        if "files" in kwargs:
+            headers.pop("Content-Type", None)
         for attempt in range(3):
             try:
                 if self._client is not None:
-                    response = await self._client.request(method, url, headers=self._headers, **kwargs)
+                    response = await self._client.request(method, url, headers=headers, **kwargs)
                 else:
                     async with httpx.AsyncClient(timeout=self.timeout) as client:
-                        response = await client.request(method, url, headers=self._headers, **kwargs)
+                        response = await client.request(method, url, headers=headers, **kwargs)
 
                 if response.status_code == 429 or response.status_code >= 500:
                     response.raise_for_status()
@@ -159,6 +171,21 @@ class VultrVectorStore:
             "POST",
             f"{self.base_url}/{collection_id}/items",
             json={"content": content, "description": description},
+        )
+        return _response_id(response.json())
+
+    async def add_file(
+        self,
+        collection_id: str,
+        filename: str,
+        content: bytes,
+        content_type: str = "application/pdf",
+    ) -> str:
+        """Upload the original document through Vultr Vector Store's file endpoint."""
+        response = await self._request(
+            "POST",
+            f"{self.base_url}/{collection_id}/files",
+            files={"file": (filename, content, content_type)},
         )
         return _response_id(response.json())
 
@@ -205,6 +232,26 @@ class VultrVectorStore:
             chunk_count=len(chunks),
         )
 
+    async def rag_query(self, collection_id: str, query: str, model: str | None = None) -> str:
+        """Ground a query in a Vultr Vector Store collection using Vultr RAG."""
+        rag_url = self.base_url.rsplit("/vector_store", 1)[0] + "/chat/completions/RAG"
+        response = await self._request(
+            "POST",
+            rag_url,
+            json={
+                "collection": collection_id,
+                "model": model or os.getenv("VULTR_RAG_MODEL", "qwen2.5-32b-instruct"),
+                "messages": [{"role": "user", "content": query}],
+                "max_tokens": int(os.getenv("VULTR_RAG_MAX_TOKENS", "700")),
+                "temperature": 0,
+            },
+        )
+        try:
+            message = response.json()["choices"][0]["message"]
+            return message.get("content") or message.get("reasoning_content") or ""
+        except (KeyError, IndexError, TypeError) as exc:
+            raise VultrVectorStoreError("Unexpected response from Vultr RAG endpoint") from exc
+
 
 async def ingest_manual(
     manual_text: str,
@@ -220,6 +267,52 @@ async def ingest_manual(
         chunk_size=chunk_size if chunk_size is not None else int(os.getenv("VULTR_VECTOR_CHUNK_SIZE", "2000")),
         overlap=overlap if overlap is not None else int(os.getenv("VULTR_VECTOR_CHUNK_OVERLAP", "200")),
     )
+
+
+async def query_manual(collection_id: str, contract: ContractA) -> str:
+    """Retrieve manufacturer evidence relevant to a proposed policy."""
+    ports = ", ".join(f"{item.protocol} {item.port}" for item in contract.allowed_ports) or "none"
+    query = (
+        f"For device {contract.device_model} firmware {contract.firmware_version}, return only the "
+        f"manual evidence that justifies these network ports: {ports}. Include warnings or restrictions."
+    )
+    store = VultrVectorStore(collection_id=collection_id)
+    last_error: Exception | None = None
+    for attempt in range(4):
+        if attempt:
+            await asyncio.sleep(2 ** (attempt - 1))
+        try:
+            result = await store.rag_query(collection_id, query)
+            if result.strip():
+                return result
+        except VultrVectorStoreError as exc:
+            last_error = exc
+    raise VultrVectorStoreError(f"Manual chunks were not queryable after indexing wait: {last_error}")
+
+
+async def query_cve(device_model: str, firmware_version: str) -> str:
+    """Query the Vultr-hosted CVE knowledge collection; never calls an external CVE API."""
+    collection_id = os.getenv("VULTR_CVE_COLLECTION_ID", "")
+    if not collection_id:
+        raise VultrVectorStoreError("VULTR_CVE_COLLECTION_ID is required for CVE grounding")
+    query = (
+        f"Return known CVEs for medical device {device_model}, firmware {firmware_version}. "
+        "Return concise JSON with cve_id, severity, affected_versions, and mitigation. "
+        "Return cve_id NONE when the collection contains no matching evidence."
+    )
+    return await VultrVectorStore(collection_id=collection_id).rag_query(collection_id, query)
+
+
+async def retrieve_document(query: str, device_model: str, top_k: int = 3) -> str:
+    """Targeted agent-tool retrieval through Vultr's managed RAG endpoint."""
+    collection_id = os.getenv("VULTR_VECTOR_COLLECTION_ID", "")
+    if not collection_id:
+        raise VultrVectorStoreError("VULTR_VECTOR_COLLECTION_ID is required for document retrieval")
+    grounded_query = (
+        f"Return up to {top_k} exact manual passages for device {device_model} relevant to: {query}. "
+        "For each passage, include the Vultr source item identifier when available."
+    )
+    return await VultrVectorStore(collection_id=collection_id).rag_query(collection_id, grounded_query)
 
 
 def _records(payload: Any, *keys: str) -> list[dict[str, Any]]:
@@ -240,10 +333,10 @@ def _records(payload: Any, *keys: str) -> list[dict[str, Any]]:
 
 def _response_id(payload: Any) -> str:
     if isinstance(payload, dict):
-        value = payload.get("id")
+        value = payload.get("id") or payload.get("file_id") or payload.get("item_id")
         if value is not None:
             return str(value)
-        for key in ("data", "collection", "vector_store", "item"):
+        for key in ("data", "collection", "vector_store", "item", "file"):
             if key in payload:
                 try:
                     return _response_id(payload[key])

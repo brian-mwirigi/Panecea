@@ -1,6 +1,7 @@
 # Vultr Serverless Inference API client. Handles streaming, tool calling, and reasoning token forwarding.
 
 import json
+import inspect
 import sys
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -20,6 +21,7 @@ from config import (
     VULTR_MAIN_MODEL,
     VULTR_MAX_TOKENS,
     VULTR_TEMPERATURE,
+    VULTR_TOOL_MODEL,
 )
 
 HEADERS = {
@@ -132,7 +134,7 @@ async def complete(messages: list[dict]) -> str:
 async def run_agentic_loop(
     messages: list[dict],
     tools: list[dict],
-    tool_executor: Callable[[str, dict], str],
+    tool_executor: Callable[[str, dict], str | Awaitable[str]],
     on_token: Callable[[StreamToken], Awaitable[None]] | None = None,
 ) -> dict:
     """
@@ -149,7 +151,7 @@ async def run_agentic_loop(
 
     for _ in range(10):  # max 10 tool call rounds to prevent infinite loops
         payload = {
-            **_base_payload(VULTR_MAIN_MODEL, history),
+            **_base_payload(VULTR_TOOL_MODEL, history),
             "tools": tools,
             "tool_choice": "auto",
             "stream": False,
@@ -201,6 +203,8 @@ async def run_agentic_loop(
                 await on_token(StreamToken(text=f"\n[TOOL CALL → {tool_name}({arguments})]\n", type="reasoning"))
 
             result = tool_executor(tool_name, arguments)
+            if inspect.isawaitable(result):
+                result = await result
 
             if on_token:
                 await on_token(StreamToken(text=f"[TOOL RESULT ← {result}]\n", type="reasoning"))

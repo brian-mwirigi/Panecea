@@ -124,7 +124,7 @@ def retract_rules(device_id: str) -> dict:
     the demo can be replayed from a clean 'before' state. Never touches the
     admin SSH rule, never opens 0.0.0.0/0.
 
-    NOTE: device_id is currently decorative — single-device hackathon scope,
+    NOTE: device_id is currently decorative - single-device hackathon scope,
     always acts on VULTR_FIREWALL_GROUP_ID from env. Wire real device routing
     here if multi-device support is ever needed.
     """

@@ -1,24 +1,49 @@
 // Runtime configuration for the Command Center.
 //
-// The dashboard ships in "mock" mode so it can run standalone (and on Vercel
-// previews) without a backend. When the real FastAPI service is ready, flip
-// NEXT_PUBLIC_USE_MOCK to "false" and point the URLs at the backend — the data
-// hooks are the only place that needs to branch on this.
+// The dashboard runs in "mock" mode by default so it works with no backend
+// (great for Vercel previews). When NEXT_PUBLIC_USE_MOCK is "false", the data
+// hook talks to the real FastAPI backend:
+//   - REST (agent run + policy override) is proxied through Next.js rewrites
+//     (see next.config.ts) so an HTTPS Vercel page can reach an http:// backend
+//     without mixed-content / CORS problems.
+//   - The WebSocket connects directly to NEXT_PUBLIC_WS_URL (cannot be proxied
+//     on Vercel), so for the deployed HTTPS site it must be a wss:// URL.
 
 export const config = {
   /** When true, all data is generated locally by the simulator. */
   useMock: process.env.NEXT_PUBLIC_USE_MOCK !== "false",
 
-  /** REST base for the FastAPI backend (agent run + policy override). */
+  /** REST base for the FastAPI backend (used by the server-side rewrite). */
   apiUrl: process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:8000",
 
   /** WebSocket endpoint that streams live agent reasoning tokens. */
-  wsUrl: process.env.NEXT_PUBLIC_WS_URL ?? "ws://localhost:8000/ws/agent-stream",
+  wsUrl:
+    process.env.NEXT_PUBLIC_WS_URL ?? "ws://localhost:8000/ws/agent-stream",
+
+  /** Real Vultr VPC targeted by the demo agent. */
+  vpcId: process.env.NEXT_PUBLIC_VPC_ID ?? "vpc-medical-01",
 } as const;
 
-/** Backend routes, kept here so the swap-in later is a one-line change. */
+/**
+ * Backend routes.
+ *
+ * REST calls go through the same-origin `/backend/*` proxy (rewritten to
+ * `config.apiUrl/*` server-side). The WebSocket is a direct connection.
+ */
 export const endpoints = {
-  agentRun: `${config.apiUrl}/api/v1/agent/run`,
-  policy: (deviceId: string) => `${config.apiUrl}/api/v1/policy/${deviceId}`,
+  agentRun: "/backend/api/v1/agent/run",
+  policy: (deviceId: string) => `/backend/api/v1/policy/${deviceId}`,
   agentStream: config.wsUrl,
 } as const;
+
+/**
+ * Sample device-manual text sent as `raw_pdf_text` when triggering an agent
+ * run from the UI (until a real uploaded PDF is wired in). Mirrors the Philips
+ * IntelliVue example from the project README.
+ */
+export const SAMPLE_MANUAL_TEXT = [
+  "Philips IntelliVue Patient Monitor — Network Configuration Guide (Firmware B.01).",
+  "The monitor transmits HL7 patient data over TCP port 3200 to the central station.",
+  "Port 2050 is used for device discovery. All remote administration (SSH, port 22)",
+  "must remain disabled in clinical deployments to prevent lateral movement.",
+].join(" ");

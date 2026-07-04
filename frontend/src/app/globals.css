@@ -42,11 +42,10 @@ body {
   color: var(--foreground);
   font-family: var(--font-sans), system-ui, sans-serif;
   background-color: var(--background);
-  /* Layered ambient aurora behind the frosted glass. */
+  /* Subtle, restrained ambient glow behind the frosted glass. */
   background-image:
-    radial-gradient(60rem 60rem at 12% -10%, rgba(34, 211, 238, 0.16), transparent 60%),
-    radial-gradient(50rem 50rem at 100% 0%, rgba(167, 139, 250, 0.16), transparent 55%),
-    radial-gradient(55rem 55rem at 50% 120%, rgba(52, 211, 153, 0.12), transparent 60%);
+    radial-gradient(70rem 70rem at 15% -12%, rgba(34, 211, 238, 0.07), transparent 60%),
+    radial-gradient(60rem 60rem at 95% 4%, rgba(148, 163, 184, 0.05), transparent 55%);
   background-attachment: fixed;
   -webkit-font-smoothing: antialiased;
 }

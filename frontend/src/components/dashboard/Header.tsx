@@ -2,15 +2,17 @@
 
 import { useEffect, useState } from "react";
 import { motion } from "framer-motion";
-import { ShieldPlus, Activity } from "lucide-react";
+import { ShieldPlus, Activity, Wifi, WifiOff, FlaskConical } from "lucide-react";
+import type { DataMode } from "@/hooks/useSimulatedStream";
 
 interface HeaderProps {
   autonomous: boolean;
   running: boolean;
+  dataMode: DataMode;
 }
 
 /** Top command bar: brand, live system status and clock. */
-export function Header({ autonomous, running }: HeaderProps) {
+export function Header({ autonomous, running, dataMode }: HeaderProps) {
   const [now, setNow] = useState<string>("");
 
   useEffect(() => {
@@ -20,9 +22,12 @@ export function Header({ autonomous, running }: HeaderProps) {
         minute: "2-digit",
         second: "2-digit",
       });
-    setNow(fmt());
+    const initial = setTimeout(() => setNow(fmt()), 0);
     const id = setInterval(() => setNow(fmt()), 1000);
-    return () => clearInterval(id);
+    return () => {
+      clearTimeout(initial);
+      clearInterval(id);
+    };
   }, []);
 
   return (
@@ -33,7 +38,7 @@ export function Header({ autonomous, running }: HeaderProps) {
       className="glass sweep relative flex flex-wrap items-center justify-between gap-4 rounded-2xl px-5 py-4"
     >
       <div className="flex items-center gap-4">
-        <div className="grid h-11 w-11 place-items-center rounded-xl bg-gradient-to-br from-accent/30 to-accent-3/30 ring-1 ring-white/15">
+        <div className="grid h-11 w-11 place-items-center rounded-xl bg-accent/15 ring-1 ring-white/15">
           <ShieldPlus className="h-6 w-6 text-accent" strokeWidth={2} />
         </div>
         <div>
@@ -52,6 +57,25 @@ export function Header({ autonomous, running }: HeaderProps) {
       </div>
 
       <div className="flex items-center gap-3">
+        <StatusPill
+          label={
+            dataMode === "live"
+              ? "Live Backend"
+              : dataMode === "fallback"
+                ? "Backend Offline"
+                : "Simulated"
+          }
+          tone={dataMode === "live" ? "good" : dataMode === "fallback" ? "warn" : "idle"}
+          icon={
+            dataMode === "live" ? (
+              <Wifi className="h-3.5 w-3.5" />
+            ) : dataMode === "fallback" ? (
+              <WifiOff className="h-3.5 w-3.5" />
+            ) : (
+              <FlaskConical className="h-3.5 w-3.5" />
+            )
+          }
+        />
         <StatusPill
           label={autonomous ? "Autonomous" : "Manual Override"}
           tone={autonomous ? "good" : "warn"}
