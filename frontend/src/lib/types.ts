@@ -58,6 +58,8 @@ export interface Device {
   bpm: number;
   ports: number[];
   last_seen: number;
+  /** Firewall rules currently enforced on this device (from Contract B). */
+  firewallRules?: FirewallRule[];
 }
 
 /** A single sample in a rolling ECG-style heartbeat waveform. */
@@ -76,6 +78,11 @@ export interface AgentLogLine {
   level: LogLevel;
   step?: number;
   text: string;
+  /**
+   * Dim rendering for backend "reasoning" tokens (the model's thinking), vs
+   * bright rendering for "content" tokens (the model's decisions).
+   */
+  dim?: boolean;
 }
 
 /** A point in the analytics time series for threats / port activity. */

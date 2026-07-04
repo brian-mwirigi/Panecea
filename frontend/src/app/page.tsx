@@ -19,6 +19,7 @@ export default function CommandCenter() {
     stats,
     autonomous,
     running,
+    dataMode,
     setAutonomous,
     runAgent,
     overrideDevice,
@@ -26,7 +27,7 @@ export default function CommandCenter() {
 
   return (
     <main className="mx-auto flex min-h-screen max-w-[1600px] flex-col gap-4 p-4 sm:p-6">
-      <Header autonomous={autonomous} running={running} />
+      <Header autonomous={autonomous} running={running} dataMode={dataMode} />
 
       <StatsRow stats={stats} />
 
@@ -53,8 +54,8 @@ export default function CommandCenter() {
       </section>
 
       <footer className="pb-2 pt-1 text-center text-[11px] text-white/25">
-        Panacea v2 · Command Center · running on simulated telemetry — swap to
-        live backend via NEXT_PUBLIC_USE_MOCK=false
+        Panacea v2 · Command Center · agent reasoning &amp; incident memos from
+        live backend when connected; device vitals &amp; analytics simulated
       </footer>
     </main>
   );
