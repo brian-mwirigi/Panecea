@@ -40,6 +40,10 @@ export const endpoints = {
   /** Multipart PDF manual ingestion (file + vpc_id) → streams + returns Contract B. */
   manualsRun: "/backend/api/v1/manuals/run",
   policy: (deviceId: string) => `/backend/api/v1/policy/${deviceId}`,
+  /** Real, append-only decision history (GET, ?limit=). */
+  audit: (limit = 50) => `/backend/api/v1/agent/audit?limit=${limit}`,
+  /** Plain-English compliance justification for a Contract B (POST { policy }). */
+  explain: "/backend/api/v1/agent/explain",
   agentStream: config.wsUrl,
 } as const;
 

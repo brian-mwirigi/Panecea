@@ -37,6 +37,14 @@ export function HeartbeatMonitor({ devices }: HeartbeatMonitorProps) {
       />
       <div className="relative flex-1 p-3">
         <div className="grid-overlay recessed relative h-full min-h-44 overflow-hidden rounded-xl">
+          {devices.length === 0 ? (
+            <div className="flex h-full flex-col items-center justify-center text-center">
+              <HeartPulse className="h-6 w-6 text-faint" />
+              <p className="mt-3 text-sm text-muted">No devices monitored</p>
+              <p className="section-label mt-1">Ingest a manual to add a device</p>
+            </div>
+          ) : (
+            <>
           <Ecg bpm={bpm} tone={tone} />
           <div className="pointer-events-none absolute left-4 top-3">
             <div className="section-label">{active?.model ?? "—"}</div>
@@ -58,6 +66,8 @@ export function HeartbeatMonitor({ devices }: HeartbeatMonitorProps) {
             </span>
             <span className="section-label pb-1">BPM</span>
           </div>
+            </>
+          )}
         </div>
       </div>
     </GlassCard>
