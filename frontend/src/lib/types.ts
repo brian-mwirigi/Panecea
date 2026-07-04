@@ -45,6 +45,28 @@ export interface IncidentMemo extends ContractB {
   created_at: number;
 }
 
+/**
+ * One entry from the backend's append-only audit log
+ * (GET /api/v1/agent/audit). Every real autonomous decision is recorded.
+ */
+export interface AuditEntry {
+  timestamp?: string;
+  event?: string;
+  lease_id?: string;
+  operator_id?: string;
+  device_model?: string;
+  firmware_version?: string;
+  source_doc_id?: string;
+  confidence_score?: number;
+  confidence_explanation?: string;
+  reasoning_chars?: number;
+  cve_flagged?: string;
+  firewall_rules?: FirewallRule[];
+  drift_alert?: string | null;
+  evidence_key?: string;
+  evidence_sha256?: string;
+}
+
 /** Operational status of a monitored medical device. */
 export type DeviceStatus = "secure" | "monitoring" | "quarantined" | "override";
 

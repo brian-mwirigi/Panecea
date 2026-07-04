@@ -2,7 +2,7 @@
 
 import { useState } from "react";
 import { AnimatePresence, motion } from "framer-motion";
-import { FileText, ShieldAlert, CheckCircle2, XCircle } from "lucide-react";
+import { FileText, ShieldAlert, CheckCircle2, XCircle, Sparkles, Loader2 } from "lucide-react";
 import { GlassCard, PanelHeader } from "./GlassCard";
 import type { IncidentMemo as IncidentMemoType } from "@/lib/types";
 
@@ -32,9 +32,10 @@ function hasRealCve(cve: string | null): cve is string {
 
 interface IncidentMemoProps {
   memos: IncidentMemoType[];
+  onExplain?: (memo: IncidentMemoType) => Promise<string>;
 }
 
-export function IncidentMemo({ memos }: IncidentMemoProps) {
+export function IncidentMemo({ memos, onExplain }: IncidentMemoProps) {
   return (
     <GlassCard delay={0.15} className="flex h-full flex-col overflow-hidden">
       <PanelHeader
@@ -42,21 +43,55 @@ export function IncidentMemo({ memos }: IncidentMemoProps) {
         subtitle="Contract B · agent decisions"
         icon={<FileText className="h-4.5 w-4.5" />}
       />
-      <div className="slim-scroll flex-1 space-y-3 overflow-y-auto px-4 pb-4">
-        <AnimatePresence initial={false}>
-          {memos.map((memo) => (
-            <MemoCard key={memo.id} memo={memo} />
-          ))}
-        </AnimatePresence>
+      <div className="slim-scroll flex-1 space-y-3 overflow-y-auto px-4 py-4">
+        {memos.length === 0 ? (
+          <div className="flex h-full min-h-40 flex-col items-center justify-center text-center">
+            <FileText className="h-6 w-6 text-faint" />
+            <p className="mt-3 text-sm text-muted">No decisions yet</p>
+            <p className="section-label mt-1">Ingest a manual to generate a memo</p>
+          </div>
+        ) : (
+          <AnimatePresence initial={false}>
+            {memos.map((memo) => (
+              <MemoCard key={memo.id} memo={memo} onExplain={onExplain} />
+            ))}
+          </AnimatePresence>
+        )}
       </div>
     </GlassCard>
   );
 }
 
-function MemoCard({ memo }: { memo: IncidentMemoType }) {
+function MemoCard({
+  memo,
+  onExplain,
+}: {
+  memo: IncidentMemoType;
+  onExplain?: (memo: IncidentMemoType) => Promise<string>;
+}) {
   const [expanded, setExpanded] = useState(false);
+  const [explaining, setExplaining] = useState(false);
+  const [explanation, setExplanation] = useState<string | null>(null);
+  const [explainError, setExplainError] = useState<string | null>(null);
   const text = cleanMemoText(memo.memo_text);
   const isLong = text.length > 240;
+
+  const handleExplain = async () => {
+    if (!onExplain || explaining) return;
+    if (explanation) {
+      setExplanation(null);
+      return;
+    }
+    setExplaining(true);
+    setExplainError(null);
+    try {
+      setExplanation(await onExplain(memo));
+    } catch (err) {
+      setExplainError(err instanceof Error ? err.message : "Explanation failed");
+    } finally {
+      setExplaining(false);
+    }
+  };
   return (
     <motion.article
       layout
@@ -126,6 +161,44 @@ function MemoCard({ memo }: { memo: IncidentMemoType }) {
         <div className="mt-2.5 flex items-center gap-1.5 rounded-md bg-danger/10 px-2 py-1 text-[11px] font-medium text-danger ring-1 ring-danger/20">
           <ShieldAlert className="h-3.5 w-3.5" />
           {memo.cve_flagged}
+        </div>
+      )}
+
+      {onExplain && (
+        <div className="mt-3 border-t border-hairline pt-2.5">
+          <button
+            onClick={handleExplain}
+            disabled={explaining}
+            className="flex items-center gap-1.5 text-[11px] font-medium text-accent transition hover:text-foreground disabled:opacity-60"
+          >
+            {explaining ? (
+              <Loader2 className="h-3.5 w-3.5 animate-spin" />
+            ) : (
+              <Sparkles className="h-3.5 w-3.5" />
+            )}
+            {explaining
+              ? "Asking the agent…"
+              : explanation
+                ? "Hide explanation"
+                : "Explain this decision"}
+          </button>
+
+          <AnimatePresence initial={false}>
+            {explanation && (
+              <motion.p
+                initial={{ opacity: 0, height: 0 }}
+                animate={{ opacity: 1, height: "auto" }}
+                exit={{ opacity: 0, height: 0 }}
+                transition={{ duration: 0.2 }}
+                className="mt-2 overflow-hidden rounded-lg bg-primary/10 p-2.5 text-[12px] leading-relaxed text-muted ring-1 ring-accent/20"
+              >
+                {explanation}
+              </motion.p>
+            )}
+          </AnimatePresence>
+          {explainError && (
+            <p className="mt-2 text-[11px] text-danger">Couldn&apos;t explain: {explainError}</p>
+          )}
         </div>
       )}
     </motion.article>

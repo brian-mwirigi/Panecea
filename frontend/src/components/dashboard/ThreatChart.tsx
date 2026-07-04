@@ -22,11 +22,18 @@ export function ThreatChart({ data }: ThreatChartProps) {
     <GlassCard delay={0.15} className="flex h-full flex-col overflow-hidden">
       <PanelHeader
         title="Network Activity"
-        subtitle="Allowed vs blocked traffic · per minute"
+        subtitle="allow vs deny rules · per decision"
         icon={<BarChart3 className="h-4.5 w-4.5" />}
         action={<Legend />}
       />
       <div className="min-h-52 flex-1 px-2 pb-3">
+        {data.length === 0 ? (
+          <div className="flex h-full min-h-52 flex-col items-center justify-center text-center">
+            <BarChart3 className="h-6 w-6 text-faint" />
+            <p className="mt-3 text-sm text-muted">No enforcement activity yet</p>
+            <p className="section-label mt-1">Runs & ingests plot allow/deny rules here</p>
+          </div>
+        ) : (
         <ResponsiveContainer width="100%" height="100%">
           <AreaChart data={data} margin={{ top: 8, right: 10, left: -18, bottom: 0 }}>
             <defs>
@@ -83,6 +90,7 @@ export function ThreatChart({ data }: ThreatChartProps) {
             />
           </AreaChart>
         </ResponsiveContainer>
+        )}
       </div>
     </GlassCard>
   );

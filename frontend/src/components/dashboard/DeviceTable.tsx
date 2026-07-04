@@ -26,6 +26,13 @@ export function DeviceTable({ devices, onOverride }: DeviceTableProps) {
         icon={<Cpu className="h-4.5 w-4.5" />}
       />
       <div className="slim-scroll flex-1 overflow-x-auto px-2 pb-2">
+        {devices.length === 0 ? (
+          <div className="flex min-h-40 flex-col items-center justify-center py-10 text-center">
+            <Cpu className="h-6 w-6 text-faint" />
+            <p className="mt-3 text-sm text-muted">No devices on the network</p>
+            <p className="section-label mt-1">Ingest a device manual to register one</p>
+          </div>
+        ) : (
         <table className="w-full border-collapse text-sm">
           <thead>
             <tr className="text-left">
@@ -105,6 +112,7 @@ export function DeviceTable({ devices, onOverride }: DeviceTableProps) {
             })}
           </tbody>
         </table>
+        )}
       </div>
     </GlassCard>
   );

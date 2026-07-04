@@ -182,7 +182,9 @@ export function AgentTerminal({ logs, running, onRun }: AgentTerminalProps) {
               {groups.map((g, i) => {
                 const isLast = i === groups.length - 1;
                 const isActive = running && isLast;
-                const expandable = g.kind === "thinking" || g.lines[0].text.length > 76;
+                const isError = g.level === "warn" || g.level === "threat";
+                const expandable =
+                  g.kind === "thinking" || isError || g.lines[0].text.length > 76;
                 const isOpen = open.has(g.id) || (isActive && g.kind === "thinking");
                 return (
                   <ActivityRow
@@ -241,6 +243,8 @@ function ActivityRow({
   onToggle: () => void;
 }) {
   const count = group.kind === "thinking" ? group.lines.length : 0;
+  const errorTint =
+    group.level === "threat" ? "bg-danger/5" : group.level === "warn" ? "bg-warn/5" : "";
   return (
     <motion.div
       initial={{ opacity: 0, x: -6 }}
@@ -250,7 +254,7 @@ function ActivityRow({
     >
       <button
         onClick={expandable ? onToggle : undefined}
-        className={`flex w-full items-center gap-2 rounded-md px-2 py-1.5 text-left transition-colors ${
+        className={`flex w-full items-center gap-2 rounded-md px-2 py-1.5 text-left transition-colors ${errorTint} ${
           expandable ? "hover:bg-surface-2" : "cursor-default"
         }`}
       >
