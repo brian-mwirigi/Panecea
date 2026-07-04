@@ -169,16 +169,13 @@ class VultrVectorStore:
         return self.collection_id
 
     async def add_item(self, collection_id: str, content: str, description: str) -> str:
-        # Hard cap so no single item ever exceeds the embedder's max sequence
-        # length (Vultr returns HTTP 422 otherwise). Protects every caller —
-        # manual chunks, source records, and the enforcement-memory blob.
-        max_chars = int(os.getenv("VULTR_VECTOR_MAX_ITEM_CHARS", "1500"))
-        if len(content) > max_chars:
-            content = content[:max_chars]
+        # auto_chunk lets Vultr split content that exceeds the embedder's max
+        # sequence length into ~300-token pieces automatically, avoiding HTTP 422.
+        # When it chunks, the response returns multiple item IDs — we return the first.
         response = await self._request(
             "POST",
             f"{self.base_url}/{collection_id}/items",
-            json={"content": content, "description": description[:500]},
+            json={"content": content, "description": description[:500], "auto_chunk": True},
         )
         return _response_id(response.json())
 
@@ -342,11 +339,19 @@ def _records(payload: Any, *keys: str) -> list[dict[str, Any]]:
 
 
 def _response_id(payload: Any) -> str:
+    # auto_chunk responses return a list of items — take the first ID.
+    if isinstance(payload, list):
+        for entry in payload:
+            try:
+                return _response_id(entry)
+            except VultrVectorStoreError:
+                continue
+        raise VultrVectorStoreError("Vultr Vector Store response list contained no resource ID")
     if isinstance(payload, dict):
         value = payload.get("id") or payload.get("file_id") or payload.get("item_id")
         if value is not None:
             return str(value)
-        for key in ("data", "collection", "vector_store", "item", "file"):
+        for key in ("data", "items", "collection", "vector_store", "item", "file"):
             if key in payload:
                 try:
                     return _response_id(payload[key])
