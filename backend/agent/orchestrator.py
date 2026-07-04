@@ -216,14 +216,6 @@ async def _tool_executor(tool_name: str, arguments: dict) -> str:
     This is the bridge between the LLM and the actual tool implementations.
     """
     if tool_name == "retrieve_document":
-        chunks = query_manual(
-            query=arguments.get("query", ""),
-            device_model=arguments.get("device_model", ""),
-            top_k=arguments.get("top_k", 3),
-        )
-        return format_chunks_for_llm(chunks)
-
-    if tool_name == "retrieve_document":
         return await retrieve_document(
             query=arguments.get("query", ""),
             device_model=arguments.get("device_model", ""),
