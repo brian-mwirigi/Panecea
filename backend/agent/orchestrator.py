@@ -3,7 +3,7 @@
 import json
 import sys
 from pathlib import Path
-from typing import AsyncGenerator, Awaitable, Callable
+from typing import Awaitable, Callable
 
 BACKEND_ROOT = Path(__file__).resolve().parent.parent
 if str(BACKEND_ROOT) not in sys.path:
@@ -14,7 +14,8 @@ from agent.tools.cve_lookup import format_for_llm, mock_cve_lookup
 from agent.tools.firewall import apply_firewall_rule, retract_firewall_rule
 from schemas.contract_a import ContractA
 from schemas.contract_b import ContractB, FirewallRule
-from services.vultr_inference import StreamToken, complete, run_agentic_loop, stream_completion
+from services.vultr_inference import StreamToken, complete, run_agentic_loop
+from services.vultr_vector import ingest_manual
 
 
 async def run_pipeline(
@@ -30,7 +31,7 @@ async def run_pipeline(
         2. Extract     — LLM pulls device model, firmware, allowed ports (Contract A)
         3. CVE Check   — Nemotron autonomously calls check_cve tool
         4. Decide      — Nemotron generates zero-trust policy (Contract B)
-        5. Store       — stubbed (Goutham's vector store module)
+        5. Store       — chunks the manual into Vultr Vector Store using Contract A
         6. Enforce     — Nemotron calls apply_firewall_rule tool
         7. Report      — LLM expands memo for the frontend
 
@@ -76,9 +77,15 @@ async def run_pipeline(
     )
 
     # ------------------------------------------------------------------
-    # Step 5: Store policy to vector store (stubbed — Goutham's module)
+    # Step 5: Store the extracted manual in Vultr Vector Store
     # ------------------------------------------------------------------
-    await _emit("\n[STEP 5] Storing policy to Vultr Vector Store... [STUB — pending Goutham's module]\n")
+    await _emit("\n[STEP 5] Chunking manual and storing Contract A in Vultr Vector Store...\n")
+    ingestion = await ingest_manual(raw_pdf_text, contract_a)
+    contract_a = contract_a.model_copy(update={"source_doc_id": ingestion.source_doc_id})
+    await _emit(
+        f"[STEP 5 DONE] Stored {ingestion.chunk_count} chunks in Vultr collection "
+        f"{ingestion.collection_id}; source vector {ingestion.source_doc_id}.\n"
+    )
 
     # ------------------------------------------------------------------
     # Extract ContractB from the last apply_firewall_rule tool call.
