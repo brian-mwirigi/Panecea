@@ -167,10 +167,16 @@ class VultrVectorStore:
         return self.collection_id
 
     async def add_item(self, collection_id: str, content: str, description: str) -> str:
+        # Hard cap so no single item ever exceeds the embedder's max sequence
+        # length (Vultr returns HTTP 422 otherwise). Protects every caller —
+        # manual chunks, source records, and the enforcement-memory blob.
+        max_chars = int(os.getenv("VULTR_VECTOR_MAX_ITEM_CHARS", "1500"))
+        if len(content) > max_chars:
+            content = content[:max_chars]
         response = await self._request(
             "POST",
             f"{self.base_url}/{collection_id}/items",
-            json={"content": content, "description": description},
+            json={"content": content, "description": description[:500]},
         )
         return _response_id(response.json())
 
