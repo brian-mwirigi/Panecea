@@ -215,9 +215,11 @@ class VultrVectorStore:
         item_ids: list[str] = []
 
         for index, chunk in enumerate(chunks, start=1):
+            # Keep per-chunk content minimal — device+firmware header only.
+            # Full CONTRACT_A is already stored in the source record above.
             content = (
-                f"CONTRACT_A\n{contract_json}\n\n"
-                f"MANUAL_CHUNK {index}/{len(chunks)}\n{chunk}"
+                f"Device: {stored_contract.device_model} | Firmware: {stored_contract.firmware_version} | "
+                f"Source: {source_doc_id}\n\n{chunk}"
             )
             description = (
                 f"{stored_contract.device_model} {stored_contract.firmware_version}; "
