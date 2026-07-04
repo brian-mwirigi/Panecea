@@ -1,11 +1,13 @@
 # Pydantic model for Contract B: the agent decision schema sent to the Firewall API and rendered as the Incident Memo on the UI.
 
-from pydantic import BaseModel
+from typing import Literal
+
+from pydantic import BaseModel, Field
 
 
 class FirewallRule(BaseModel):
-    port: int
-    action: str  # "ALLOW" or "DENY"
+    port: int = Field(ge=1, le=65535)
+    action: Literal["ALLOW", "DENY"]
 
 
 class ContractB(BaseModel):
