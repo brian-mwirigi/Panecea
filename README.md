@@ -16,7 +16,6 @@
 
 <br/>
 
-**Statement Two · Vultr Track · RAISE Summit Hackathon 2026**
 
 *"A single retrieve-then-answer call is not enough. The keyword is agent."*
 
