@@ -4,7 +4,7 @@ import json
 import sys
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import AsyncGenerator, Callable
+from typing import AsyncGenerator, Awaitable, Callable
 
 import httpx
 
@@ -113,12 +113,16 @@ async def stream_completion(messages: list[dict]) -> AsyncGenerator[StreamToken,
 
 
 async def complete(messages: list[dict]) -> str:
-    """Collects full streamed content (non-reasoning) as a single string."""
-    parts = []
+    """Collects full streamed response as a single string. Prefers content tokens; falls back to reasoning if content is empty."""
+    content_parts = []
+    reasoning_parts = []
     async for token in stream_completion(messages):
         if token.type == "content":
-            parts.append(token.text)
-    return "".join(parts)
+            content_parts.append(token.text)
+        else:
+            reasoning_parts.append(token.text)
+    # Some Nemotron models emit the answer inside reasoning_content with no separate content field
+    return "".join(content_parts) or "".join(reasoning_parts)
 
 
 # ---------------------------------------------------------------------------
@@ -129,7 +133,7 @@ async def run_agentic_loop(
     messages: list[dict],
     tools: list[dict],
     tool_executor: Callable[[str, dict], str],
-    on_token: Callable[[StreamToken], None] | None = None,
+    on_token: Callable[[StreamToken], Awaitable[None]] | None = None,
 ) -> dict:
     """
     Runs Nemotron in an agentic tool-calling loop.
@@ -169,17 +173,22 @@ async def run_agentic_loop(
         reasoning = message.get("reasoning") or message.get("reasoning_content") or ""
         if reasoning and on_token:
             for chunk in _chunk_text(reasoning):
-                on_token(StreamToken(text=chunk, type="reasoning"))
+                await on_token(StreamToken(text=chunk, type="reasoning"))
 
         # If no tool calls, Nemotron is done — return the final message
         if not message.get("tool_calls"):
             if on_token and message.get("content"):
                 for chunk in _chunk_text(message["content"]):
-                    on_token(StreamToken(text=chunk, type="content"))
+                    await on_token(StreamToken(text=chunk, type="content"))
             return message
 
-        # Execute each tool Nemotron requested
-        history.append(message)
+        # Append a sanitized assistant message — only fields the API expects.
+        # Raw message has null audio/function_call/reasoning fields that break the next round.
+        history.append({
+            "role": "assistant",
+            "content": message.get("content"),
+            "tool_calls": message["tool_calls"],
+        })
         for tool_call in message["tool_calls"]:
             fn = tool_call["function"]
             tool_name = fn["name"]
@@ -189,12 +198,12 @@ async def run_agentic_loop(
                 arguments = {}
 
             if on_token:
-                on_token(StreamToken(text=f"\n[TOOL CALL → {tool_name}({arguments})]\n", type="reasoning"))
+                await on_token(StreamToken(text=f"\n[TOOL CALL → {tool_name}({arguments})]\n", type="reasoning"))
 
             result = tool_executor(tool_name, arguments)
 
             if on_token:
-                on_token(StreamToken(text=f"[TOOL RESULT ← {result}]\n", type="reasoning"))
+                await on_token(StreamToken(text=f"[TOOL RESULT ← {result}]\n", type="reasoning"))
 
             history.append({
                 "role": "tool",

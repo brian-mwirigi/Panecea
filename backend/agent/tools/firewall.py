@@ -41,9 +41,8 @@ def apply_firewall_rule(
 
     result = apply_rules(policy)
 
-    # Store active policy so DELETE /api/v1/policy/{device_id} can retract it
-    device_key = _derive_device_key(target_vpc_id, firewall_rules)
-    _active_policies[device_key] = policy
+    # Store by VPC ID so DELETE /api/v1/policy/{device_id} can find it
+    _active_policies[target_vpc_id] = policy
 
     return json.dumps({
         "status": result.get("status", "applied"),
@@ -79,7 +78,3 @@ def get_active_policy(device_id: str) -> ContractB | None:
     return _active_policies.get(device_id)
 
 
-def _derive_device_key(vpc_id: str, rules: list[dict]) -> str:
-    """Generates a stable key from VPC + rule fingerprint for the in-memory store."""
-    allowed = sorted(r["port"] for r in rules if r.get("action") == "ALLOW")
-    return f"{vpc_id}:{'-'.join(str(p) for p in allowed)}"

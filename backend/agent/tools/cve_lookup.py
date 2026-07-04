@@ -50,9 +50,19 @@ def mock_cve_lookup(device_model: str, firmware_version: str) -> dict:
     """
     Returns a CVE payload for the given device model and firmware version.
     Used as the tool_executor target when Nemotron calls check_cve().
+    Does partial matching so "Philips_IntelliVue_MX800" still hits "philips_intellivue".
     """
     key = device_model.lower().replace(" ", "_").replace("-", "_")
+
+    # Exact match first
     device_entry = CVE_DATABASE.get(key)
+
+    # Partial match — check if any DB key is a substring of the input key
+    if not device_entry:
+        for db_key in CVE_DATABASE:
+            if db_key in key:
+                device_entry = CVE_DATABASE[db_key]
+                break
 
     if not device_entry:
         return NO_CVE_RESULT

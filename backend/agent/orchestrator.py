@@ -3,7 +3,7 @@
 import json
 import sys
 from pathlib import Path
-from typing import AsyncGenerator, Callable
+from typing import AsyncGenerator, Awaitable, Callable
 
 BACKEND_ROOT = Path(__file__).resolve().parent.parent
 if str(BACKEND_ROOT) not in sys.path:
@@ -13,14 +13,14 @@ from agent.prompts import TOOLS, agentic_policy_prompt, extraction_prompt, incid
 from agent.tools.cve_lookup import format_for_llm, mock_cve_lookup
 from agent.tools.firewall import apply_firewall_rule, retract_firewall_rule
 from schemas.contract_a import ContractA
-from schemas.contract_b import ContractB
+from schemas.contract_b import ContractB, FirewallRule
 from services.vultr_inference import StreamToken, complete, run_agentic_loop, stream_completion
 
 
 async def run_pipeline(
     raw_pdf_text: str,
     vpc_id: str,
-    on_token: Callable[[StreamToken], None] | None = None,
+    on_token: Callable[[StreamToken], Awaitable[None]] | None = None,
 ) -> ContractB:
     """
     Executes the full 7-step PANACEA pipeline.
@@ -43,23 +43,23 @@ async def run_pipeline(
         ContractB with the final firewall policy and incident memo.
     """
 
-    def _emit(text: str, token_type: str = "reasoning") -> None:
+    async def _emit(text: str, token_type: str = "reasoning") -> None:
         if on_token:
-            on_token(StreamToken(text=text, type=token_type))
+            await on_token(StreamToken(text=text, type=token_type))
 
     # ------------------------------------------------------------------
     # Step 2: Extract device info from the PDF text
     # ------------------------------------------------------------------
-    _emit("\n[STEP 2] Extracting network requirements from device manual...\n")
+    await _emit("\n[STEP 2] Extracting network requirements from device manual...\n")
     extraction_raw = await complete(extraction_prompt(raw_pdf_text))
     contract_a = _parse_contract_a(extraction_raw)
-    _emit(f"[STEP 2 DONE] Device: {contract_a.device_model} | Firmware: {contract_a.firmware_version} | Ports: {[p.port for p in contract_a.allowed_ports]}\n")
+    await _emit(f"[STEP 2 DONE] Device: {contract_a.device_model} | Firmware: {contract_a.firmware_version} | Ports: {[p.port for p in contract_a.allowed_ports]}\n")
 
     # ------------------------------------------------------------------
     # Step 3 + 4 + 6: Nemotron autonomously calls tools to CVE check,
     # decide policy, and apply firewall rules
     # ------------------------------------------------------------------
-    _emit("\n[STEP 3-4-6] Handing control to Nemotron for CVE check, policy decision, and firewall enforcement...\n")
+    await _emit("\n[STEP 3-4-6] Handing control to Nemotron for CVE check, policy decision, and firewall enforcement...\n")
 
     messages = agentic_policy_prompt(
         device_model=contract_a.device_model,
@@ -78,20 +78,32 @@ async def run_pipeline(
     # ------------------------------------------------------------------
     # Step 5: Store policy to vector store (stubbed — Goutham's module)
     # ------------------------------------------------------------------
-    _emit("\n[STEP 5] Storing policy to Vultr Vector Store... [STUB — pending Goutham's module]\n")
+    await _emit("\n[STEP 5] Storing policy to Vultr Vector Store... [STUB — pending Goutham's module]\n")
 
     # ------------------------------------------------------------------
-    # Extract ContractB from the last apply_firewall_rule tool call
+    # Extract ContractB from the last apply_firewall_rule tool call.
+    # If Nemotron didn't call the tool, build a deterministic policy so the
+    # demo never shows empty rules (README guardrail #4: graceful fallbacks).
     # ------------------------------------------------------------------
     contract_b = _extract_contract_b(final_message, vpc_id)
+    if not contract_b.firewall_rules:
+        await _emit("\n[FALLBACK] Nemotron did not enforce via tool — generating deterministic zero-trust policy.\n")
+        contract_b = _deterministic_policy(contract_a, vpc_id)
+        apply_firewall_rule(
+            target_vpc_id=contract_b.target_vpc_id,
+            firewall_rules=[r.model_dump() for r in contract_b.firewall_rules],
+            confidence_score=contract_b.confidence_score,
+            cve_flagged=contract_b.cve_flagged,
+            memo_text=contract_b.memo_text,
+        )
 
     # ------------------------------------------------------------------
     # Step 7: Expand the incident memo for Oleh's frontend
     # ------------------------------------------------------------------
-    _emit("\n[STEP 7] Generating incident memo...\n")
+    await _emit("\n[STEP 7] Generating incident memo...\n")
     memo = await complete(incident_memo_prompt(contract_b.model_dump()))
     contract_b.memo_text = memo.strip()
-    _emit(f"\n[STEP 7 DONE] Memo ready.\n", "content")
+    await _emit("\n[STEP 7 DONE] Memo ready.\n", "content")
 
     return contract_b
 
@@ -127,6 +139,44 @@ async def retract_policy(device_id: str) -> dict:
     """
     result = retract_firewall_rule(device_id)
     return json.loads(result)
+
+
+def _deterministic_policy(contract_a: ContractA, vpc_id: str) -> ContractB:
+    """
+    Builds a zero-trust firewall policy without the LLM — used as a safety net
+    when Nemotron does not call apply_firewall_rule. ALLOWs manual ports,
+    DENYs SSH/Telnet, and flags any CVE found for the device.
+    """
+    cve = mock_cve_lookup(contract_a.device_model, contract_a.firmware_version)
+
+    rules = [FirewallRule(port=p.port, action="ALLOW") for p in contract_a.allowed_ports]
+    # Always deny common lateral-movement ports not explicitly allowed
+    allowed_ports = {p.port for p in contract_a.allowed_ports}
+    for risky_port in (22, 23):
+        if risky_port not in allowed_ports:
+            rules.append(FirewallRule(port=risky_port, action="DENY"))
+
+    cve_id = cve["cve_id"]
+    if cve_id != "NONE":
+        memo = (
+            f"Blocked lateral movement on ports 22/23 for {contract_a.device_model}. "
+            f"Flagged {cve_id} ({cve['severity']}). Allowed manual-approved ports {sorted(allowed_ports)}."
+        )
+        confidence = 88
+    else:
+        memo = (
+            f"Applied zero-trust baseline for {contract_a.device_model}. "
+            f"Allowed {sorted(allowed_ports)}, denied SSH/Telnet."
+        )
+        confidence = 82
+
+    return ContractB(
+        target_vpc_id=vpc_id,
+        firewall_rules=rules,
+        confidence_score=confidence,
+        cve_flagged=cve_id,
+        memo_text=memo,
+    )
 
 
 def _parse_contract_a(raw: str) -> ContractA:
