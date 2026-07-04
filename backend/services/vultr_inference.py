@@ -1,64 +1,98 @@
 # Vultr Serverless Inference API client. Sends prompts to the hosted LLM and returns streamed text responses via httpx.
 
-import os
 import json
+import sys
+from pathlib import Path
 from typing import AsyncGenerator
 
 import httpx
-from dotenv import load_dotenv
 
-load_dotenv()
+BACKEND_ROOT = Path(__file__).resolve().parent.parent
+if str(BACKEND_ROOT) not in sys.path:
+    sys.path.insert(0, str(BACKEND_ROOT))
 
-API_KEY = os.getenv("VULTR_INFERENCE_API_KEY")
-BASE_URL = os.getenv("VULTR_INFERENCE_BASE_URL", "https://api.vultrinference.com/v1")
-MODEL = os.getenv("VULTR_INFERENCE_MODEL", "nvidia/llama-3.1-nemotron-70b-instruct")
+from config import (
+    VULTR_FALLBACK_MODEL,
+    VULTR_INFERENCE_API_KEY,
+    VULTR_INFERENCE_BASE_URL,
+    VULTR_INFERENCE_TIMEOUT,
+    VULTR_MAIN_MODEL,
+    VULTR_MAX_TOKENS,
+    VULTR_TEMPERATURE,
+)
 
 HEADERS = {
-    "Authorization": f"Bearer {API_KEY}",
+    "Authorization": f"Bearer {VULTR_INFERENCE_API_KEY}",
     "Content-Type": "application/json",
 }
+
+
+def _build_payload(model: str, messages: list[dict]) -> dict:
+    return {
+        "model": model,
+        "messages": messages,
+        "stream": True,
+        "max_tokens": VULTR_MAX_TOKENS,
+        "temperature": VULTR_TEMPERATURE,
+    }
+
+
+def _extract_token(chunk: dict) -> str:
+    delta = chunk["choices"][0]["delta"]
+    return delta.get("content") or delta.get("reasoning") or delta.get("reasoning_content") or ""
+
+
+async def _stream_model(model: str, messages: list[dict]) -> AsyncGenerator[str, None]:
+    payload = _build_payload(model, messages)
+
+    async with httpx.AsyncClient(timeout=VULTR_INFERENCE_TIMEOUT) as client:
+        async with client.stream(
+            "POST",
+            f"{VULTR_INFERENCE_BASE_URL}/chat/completions",
+            headers=HEADERS,
+            json=payload,
+        ) as response:
+            response.raise_for_status()
+            async for line in response.aiter_lines():
+                if not line.startswith("data: "):
+                    continue
+                data = line[len("data: "):]
+                if data.strip() == "[DONE]":
+                    break
+                try:
+                    token = _extract_token(json.loads(data))
+                    if token:
+                        yield token
+                except (json.JSONDecodeError, KeyError):
+                    continue
 
 
 async def stream_completion(messages: list[dict]) -> AsyncGenerator[str, None]:
     """
     Streams reasoning tokens from Nemotron via Vultr's OpenAI-compatible endpoint.
-    Yields one text chunk at a time so the WebSocket can forward them live.
+    Falls back to VULTR_FALLBACK_MODEL if the main model times out or errors.
     """
-    payload = {
-        "model": MODEL,
-        "messages": messages,
-        "stream": True,
-        "max_tokens": 1024,
-        "temperature": 0.2,
-    }
-
     try:
-        async with httpx.AsyncClient(timeout=60.0) as client:
-            async with client.stream(
-                "POST",
-                f"{BASE_URL}/chat/completions",
-                headers=HEADERS,
-                json=payload,
-            ) as response:
-                response.raise_for_status()
-                async for line in response.aiter_lines():
-                    if not line.startswith("data: "):
-                        continue
-                    data = line[len("data: "):]
-                    if data.strip() == "[DONE]":
-                        break
-                    try:
-                        chunk = json.loads(data)
-                        token = chunk["choices"][0]["delta"].get("content", "")
-                        if token:
-                            yield token
-                    except (json.JSONDecodeError, KeyError):
-                        continue
-
+        async for token in _stream_model(VULTR_MAIN_MODEL, messages):
+            yield token
     except httpx.TimeoutException:
-        yield "[ERROR: Vultr Inference timeout — falling back to cached policy]"
+        yield f"[WARN: {VULTR_MAIN_MODEL} timed out — retrying with {VULTR_FALLBACK_MODEL}]"
+        try:
+            async for token in _stream_model(VULTR_FALLBACK_MODEL, messages):
+                yield token
+        except httpx.TimeoutException:
+            yield "[ERROR: Vultr Inference timeout — falling back to cached policy]"
+        except httpx.HTTPStatusError as e:
+            yield f"[ERROR: Vultr Inference returned {e.response.status_code}]"
+        except Exception as e:
+            yield f"[ERROR: {str(e)}]"
     except httpx.HTTPStatusError as e:
-        yield f"[ERROR: Vultr Inference returned {e.response.status_code}]"
+        yield f"[WARN: {VULTR_MAIN_MODEL} failed — retrying with {VULTR_FALLBACK_MODEL}]"
+        try:
+            async for token in _stream_model(VULTR_FALLBACK_MODEL, messages):
+                yield token
+        except Exception as fallback_error:
+            yield f"[ERROR: Vultr Inference returned {e.response.status_code}; fallback failed: {fallback_error}]"
     except Exception as e:
         yield f"[ERROR: {str(e)}]"
 
