@@ -1,6 +1,11 @@
 # Environment secrets — never commit
 .env
+.env.*
+!.env.example
 backend/.env
+backend/.env.*
+!backend/.env.example
+.claude/settings.local.json
 
 # Python
 __pycache__/
@@ -18,6 +23,7 @@ build/
 node_modules/
 .next/
 out/
+.vercel/
 
 # OS
 .DS_Store
