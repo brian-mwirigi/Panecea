@@ -501,22 +501,23 @@ def _clean_memo(raw: str, contract_b: "ContractB", contract_a: ContractA) -> str
     memo so the demo never shows the model 'thinking out loud'.
     """
     text = (raw or "").strip()
-    # Search all occurrences of THREAT: — skip template placeholders.
-    search = text
+    # Find the THREAT: block that is a real memo: must have ACTION: within 600 chars.
+    # The model reasons with inline THREAT: mentions before producing the final block.
+    pos = 0
+    best = None
     while True:
-        idx = search.find("THREAT:")
+        idx = text.find("THREAT:", pos)
         if idx == -1:
             break
-        candidate = search[idx:].strip()
-        candidate = candidate.split("[ERROR:", 1)[0].strip()
-        # Skip if it's a template placeholder (contains angle brackets in first line)
-        first_line = candidate.split("\n", 1)[0]
-        if "<" in first_line or ">" in first_line:
-            search = search[idx + 7:]
-            continue
-        if len(candidate) > 80:
-            return candidate
-        break
+        window = text[idx:idx + 800]
+        candidate = text[idx:].strip().split("[ERROR:", 1)[0].strip()
+        # Must have ACTION: and STATUS: to be the real memo, not a reasoning reference
+        if "ACTION:" in window and "STATUS:" in window:
+            best = candidate
+            # Keep scanning — prefer the LAST well-formed block (final answer)
+        pos = idx + 7
+    if best and len(best) > 80:
+        return best
 
     # Fallback: deterministic, always-clean memo grounded in the decision.
     allows = [r.port for r in contract_b.firewall_rules if r.action == "ALLOW"]
