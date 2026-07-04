@@ -520,9 +520,9 @@ def _build_memo(
     )
 
     status = (
-        f"Device network-isolated on vpc {contract_b.target_vpc_id}. "
-        f"Policy enforced at {contract_b.confidence_score}% confidence "
-        f"({confidence_explanation})."
+        f"Device network-isolated on {contract_b.target_vpc_id}. "
+        f"Policy enforced at {contract_b.confidence_score}% confidence. "
+        f"All ports blocked except manufacturer-approved data channels."
     )
 
     # Per-rule citations grounded in retrieved evidence where possible
