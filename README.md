@@ -43,6 +43,7 @@
 **2. Goutham – The Memory Engine (Vultr Vector Store)**
 
 * **The Task:** You own the ingestion pipeline, but **do not use ChromaDB or Qdrant.** We use **Vultr Vector Store** exclusively to keep the "no substitutions" pitch alive. You chunk the manual and push it using Contract A.
+* **Implementation:** `backend/services/vultr_vector.py` chunks manual text with configurable overlap, creates or reuses a Vultr collection, and stores every chunk with Contract A context. Configure `VULTR_INFERENCE_API_KEY` plus either `VULTR_VECTOR_COLLECTION_ID` or `VULTR_VECTOR_COLLECTION_NAME`; no local vector-store fallback is used.
 
 **3. Oleh – The Command Center (Next.js UI)**
 
