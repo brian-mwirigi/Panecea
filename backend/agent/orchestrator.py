@@ -501,14 +501,22 @@ def _clean_memo(raw: str, contract_b: "ContractB", contract_a: ContractA) -> str
     memo so the demo never shows the model 'thinking out loud'.
     """
     text = (raw or "").strip()
-    for header in ("THREAT:", "THREAT :"):
-        idx = text.find(header)
-        if idx != -1:
-            candidate = text[idx:].strip()
-            # Strip any trailing stream-error marker.
-            candidate = candidate.split("[ERROR:", 1)[0].strip()
-            if len(candidate) > 40:
-                return candidate
+    # Search all occurrences of THREAT: — skip template placeholders.
+    search = text
+    while True:
+        idx = search.find("THREAT:")
+        if idx == -1:
+            break
+        candidate = search[idx:].strip()
+        candidate = candidate.split("[ERROR:", 1)[0].strip()
+        # Skip if it's a template placeholder (contains angle brackets in first line)
+        first_line = candidate.split("\n", 1)[0]
+        if "<" in first_line or ">" in first_line:
+            search = search[idx + 7:]
+            continue
+        if len(candidate) > 80:
+            return candidate
+        break
 
     # Fallback: deterministic, always-clean memo grounded in the decision.
     allows = [r.port for r in contract_b.firewall_rules if r.action == "ALLOW"]
