@@ -4,6 +4,30 @@ Panacea v2 · RAISE Summit 2026 · Vultr track
 
 Real Vultr instance simulating the vulnerable Philips IntelliVue patient monitor for the live attack/defense demo.
 
+## Purpose
+
+This VM plays the "patient" in Panacea's demo: a stand-in for a real Philips
+IntelliVue monitor, deliberately reachable the way an unmanaged hospital
+device would be. It's what the rest of the pipeline actually acts on:
+
+1. **Contract A** (manual sourcing) establishes what a real IntelliVue device
+   needs — UDP 24105/24005, per the sourced manual — as the source-of-truth
+   policy question.
+2. **Contract B** (the firewall lockdown) is enforced directly against this
+   VM's firewall group (`panacea-medical-lockdown`) by the `vultr_firewall.py`
+   executor.
+3. **The live demo** proves the lockdown is real against *this* box: Zain's
+   attacker VM can reach the intentionally-open demo port but is blocked on
+   SSH — see "Port 22 (SSH) lockdown state" below.
+
+**Known simplification (READ THIS):** this VM's actual simulated service is a
+placeholder TCP responder on port 3200/"HL7" (`hl7_listener.py`), not the
+corrected real UDP 24105/24005 protocol used everywhere else in the docs post
+manual-sourcing-correction. The demo's firewall lockdown logic and live
+attack/defense flow are validated against 3200, not 24105 — this VM was never
+redeployed to match the corrected port data. Not a bug, just don't assume the
+two are the same port.
+
 ## Current state — ACTIVE TARGET (Chicago)
 
 | Item | Value |
@@ -69,6 +93,41 @@ Not Mohamed's action items — noted here for reference.
 
 - `hl7_listener.py` — the trivial placeholder TCP listener bound to port 3200. Not real HL7 protocol logic — just enough to be a real, alive service so the firewall's "allow 3200" rule has something real behind it. Deployed at `/root/hl7_listener.py` on the Chicago target VM.
 - `hl7-listener.service` — systemd unit running the listener, auto-restarts, survives reboots. Installed at `/etc/systemd/system/hl7-listener.service`, enabled via `systemctl enable --now hl7-listener.service`.
+
+## Redeploying `hl7_listener.py`
+
+The running service on the box does **not** auto-update when this file
+changes in the repo — it has to be pushed manually:
+
+```bash
+# 1. Copy the updated listener to the box (the systemd unit itself is
+#    unchanged, so no need to reinstall it, just overwrite the script)
+scp -i ~/.ssh/panacea_target infra/philips-target/hl7_listener.py \
+    root@64.177.118.214:/root/hl7_listener.py
+
+# 2. Restart the service and confirm it came back up clean
+ssh -i ~/.ssh/panacea_target root@64.177.118.214 \
+    "systemctl restart hl7-listener.service && systemctl status hl7-listener.service --no-pager"
+```
+
+Expected: `Active: active (running)`, with a recent `Listening on
+0.0.0.0:3200` line in the journal (`journalctl -u hl7-listener.service -n 5`).
+
+Verify it actually took effect from a machine that can reach the target (the
+admin CIDR or attacker CIDR — a generic sandbox/dev box usually can't, since
+neither CIDR matches its egress IP):
+
+```bash
+nc -zv 64.177.118.214 3200   # should connect
+nc -zv 64.177.118.214 22     # should time out unless you're on the admin CIDR
+```
+
+**As of this writing, the disconnect-handling hardening (PR #29, commit
+`978f3b2`) is merged into `main` but not yet redeployed to this VM** — the box
+is still running the pre-fix version. This doesn't block the demo (the
+pre-fix version was empirically verified to handle the real attacker-probe
+pattern without crashing — see PR #29's description), but redeploy before
+showtime if there's a spare minute.
 
 ## For Zain (attacker VM owner)
 
