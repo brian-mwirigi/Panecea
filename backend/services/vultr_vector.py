@@ -119,12 +119,19 @@ class VultrVectorStore:
             "Content-Type": "application/json",
         }
 
+    # Vultr's Vector Store intermittently returns these under concurrent load
+    # (e.g. multi-device runs ingesting/querying the same collection at once):
+    # 422 "Internal Error" on /items, and a transient "Collection not found" on
+    # /RAG while another ingest is still indexing. All are safe to retry.
+    _RETRYABLE_STATUS = frozenset({409, 422, 425, 429, 500, 502, 503, 504})
+    _MAX_ATTEMPTS = 5
+
     async def _request(self, method: str, url: str, **kwargs: Any) -> httpx.Response:
         last_error: Exception | None = None
         headers = self._headers.copy()
         if "files" in kwargs:
             headers.pop("Content-Type", None)
-        for attempt in range(3):
+        for attempt in range(self._MAX_ATTEMPTS):
             try:
                 if self._client is not None:
                     response = await self._client.request(method, url, headers=headers, **kwargs)
@@ -132,22 +139,27 @@ class VultrVectorStore:
                     async with httpx.AsyncClient(timeout=self.timeout) as client:
                         response = await client.request(method, url, headers=headers, **kwargs)
 
-                if response.status_code == 429 or response.status_code >= 500:
-                    response.raise_for_status()
                 if response.is_error:
                     detail = response.text[:500]
                     endpoint = url.rsplit("/", 2)[-2:]
-                    raise VultrVectorStoreError(
+                    error = VultrVectorStoreError(
                         f"Vultr Vector Store returned HTTP {response.status_code} "
                         f"at .../{'/'.join(endpoint)}: {detail}"
                     )
+                    if response.status_code in self._RETRYABLE_STATUS and attempt < self._MAX_ATTEMPTS - 1:
+                        last_error = error
+                        await asyncio.sleep(0.5 * (2**attempt))
+                        continue
+                    raise error
                 return response
-            except (httpx.TimeoutException, httpx.NetworkError, httpx.HTTPStatusError) as exc:
+            except (httpx.TimeoutException, httpx.NetworkError) as exc:
                 last_error = exc
-                if attempt < 2:
-                    await asyncio.sleep(0.25 * (2**attempt))
+                if attempt < self._MAX_ATTEMPTS - 1:
+                    await asyncio.sleep(0.5 * (2**attempt))
 
-        raise VultrVectorStoreError(f"Vultr Vector Store request failed after 3 attempts: {last_error}")
+        raise VultrVectorStoreError(
+            f"Vultr Vector Store request failed after {self._MAX_ATTEMPTS} attempts: {last_error}"
+        )
 
     async def ensure_collection(self) -> str:
         """Return the configured collection, creating it by name when necessary."""
