@@ -10,15 +10,19 @@
  * hand the clean text straight to /agent/run and skip server-side parsing.
  */
 
-// Loaded lazily so pdf.js never runs during SSR / build.
+// Loaded lazily so pdf.js never runs during SSR / build. We use the *legacy*
+// build, which is transpiled for broad browser support (Safari/WebKit and older
+// engines) — the default build uses newer JS that some browsers choke on with
+// "undefined is not a function".
 type PdfjsModule = typeof import("pdfjs-dist");
 let pdfjsPromise: Promise<PdfjsModule> | null = null;
 
 async function loadPdfjs(): Promise<PdfjsModule> {
   if (!pdfjsPromise) {
-    pdfjsPromise = import("pdfjs-dist").then((pdfjs) => {
+    pdfjsPromise = import("pdfjs-dist/legacy/build/pdf.mjs").then((mod) => {
+      const pdfjs = mod as unknown as PdfjsModule;
       pdfjs.GlobalWorkerOptions.workerSrc = new URL(
-        "pdfjs-dist/build/pdf.worker.min.mjs",
+        "pdfjs-dist/legacy/build/pdf.worker.min.mjs",
         import.meta.url,
       ).toString();
       return pdfjs;
