@@ -651,16 +651,27 @@ def _build_memo(
     cve = contract_b.cve_flagged
     has_cve = cve and cve not in ("NONE", "")
 
-    # Evidence text to search for citation grounding
-    all_evidence = "\n".join(
-        p for p in (tool_evidence.get("retrieved", ""), tool_evidence.get("cve", "")) if p
-    )
+    # For ALLOW citations use only manual/RAG evidence (not CVE JSON which
+    # mentions port numbers in mitigation text and corrupts the citation).
+    manual_evidence = tool_evidence.get("retrieved", "")
 
+    # Build a short human-readable summary of the highest-severity CVE for THREAT.
+    cve_description = ""
+    if has_cve and tool_evidence.get("cve"):
+        raw = tool_evidence["cve"]
+        # Pull the description field if present.
+        desc_match = re.search(r'"description"\s*:\s*"([^"]{20,200})"', raw)
+        if desc_match:
+            cve_description = desc_match.group(1).rstrip(".")
     threat = (
-        f"CVE {cve} flagged for {contract_a.device_model} firmware {contract_a.firmware_version}. "
-        f"Potential exploit via network-exposed ports." if has_cve
-        else f"Unmanaged {contract_a.device_model} (firmware {contract_a.firmware_version}) "
-             f"introduced to hospital VPC with unevaluated network exposure."
+        (
+            f"CVE {cve} detected on {contract_a.device_model} firmware {contract_a.firmware_version} "
+            + (f"— {cve_description}." if cve_description else "— potential exploit via network-exposed ports.")
+        ) if has_cve
+        else (
+            f"Unmanaged {contract_a.device_model} (firmware {contract_a.firmware_version}) "
+            f"introduced to hospital VPC with unevaluated network exposure."
+        )
     )
 
     action = (
@@ -682,14 +693,15 @@ def _build_memo(
     for rule in contract_b.firewall_rules:
         port_str = str(rule.port)
         if rule.action == "ALLOW":
-            # 1st choice: a manual passage from RAG evidence mentioning this port
             justification = ""
-            if port_str in all_evidence:
-                for sentence in all_evidence.replace("\n", " ").split("."):
-                    if port_str in sentence and len(sentence.strip()) > 10:
-                        justification = sentence.strip()[:160]
+            # 1st choice: a manual/RAG passage that is clearly prose (not raw JSON).
+            if port_str in manual_evidence:
+                for sentence in manual_evidence.replace("\n", " ").split("."):
+                    s = sentence.strip()
+                    if port_str in s and len(s) > 10 and not s.startswith("{") and '"' not in s[:8]:
+                        justification = s[:160]
                         break
-            # 2nd choice: the extracted Contract A reason (carries the page ref)
+            # 2nd choice: the extracted Contract A reason (carries the page ref).
             if not justification and rule.port in port_reasons:
                 justification = f"Device manual — {port_reasons[rule.port]}"
             # Fallback
