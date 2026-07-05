@@ -72,10 +72,6 @@ This is the intended demo behavior for `panacea-medical-lockdown`: the
 attacker VM times out on port 22 (no SSH access) while still being able to
 reach port 3200.
 
-## Decommissioned — Paris instance
-
-The original target VM in Paris (`3a71efd5-fb92-4334-83e9-3653c0386296`, `45.32.146.113`) has been **destroyed**. Chicago (`ord`) is now the only target VM — do not reference the old Paris IP anywhere (demo scripts, Zain's attacker config, docs).
-
 ## Team context
 
 Not Mohamed's action items — noted here for reference.
