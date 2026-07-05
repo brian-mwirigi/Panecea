@@ -52,15 +52,6 @@ export const endpoints = {
  * run from the UI (until a real uploaded PDF is wired in). Mirrors the Philips
  * IntelliVue example from the project README.
  */
-export const SAMPLE_MANUAL_TEXT = [
-  "Philips IntelliVue Patient Monitor — Data Export Interface Programming Guide",
-  "(X2, MP, MX, FM Series, Release L.0, Firmware L.0).",
-  "Section 4 — Transport Protocols for the LAN Interface (p. 29):",
-  "'The current Protocol version uses the fixed UDP port 24105.",
-  "All messages sent from the Computer Client to the monitor must use this port number",
-  "as the destination port number.'",
-  "Section 5 — Connect Indication Event (p. 53):",
-  "UDP port 24005 is used for device discovery broadcasts.",
-  "All remote administration (SSH, port 22) must remain disabled in clinical",
-  "deployments to prevent lateral movement across the hospital network.",
-].join(" ");
+// Empty string triggers the backend's deterministic demo path (Philips IntelliVue
+// L.0, ports 24105/24005, CVE-2018-10597) — no LLM extraction lottery, no WARN.
+export const SAMPLE_MANUAL_TEXT = "";
