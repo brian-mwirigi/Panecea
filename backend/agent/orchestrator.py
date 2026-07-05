@@ -171,7 +171,11 @@ async def run_pipeline(
         # demo is reproducible and drift only reflects a real document change.
         contract_a, extraction_fell_back = demo_contract, False
     else:
-        extraction_raw = await complete(extraction_prompt(manual_text))
+        # Nemotron's context window can't handle full PDFs (300+ pages = 500k+
+        # chars). Port requirements always appear in early sections, so take the
+        # first 6000 chars which reliably covers the network chapter.
+        extraction_text = manual_text[:6000]
+        extraction_raw = await complete(extraction_prompt(extraction_text))
         contract_a, extraction_fell_back = _parse_contract_a(extraction_raw)
     if source_doc_id:
         contract_a = contract_a.model_copy(update={"source_doc_id": source_doc_id})
