@@ -22,8 +22,11 @@ from services.vultr_events import publish_event
 from services.vultr_inference import StreamToken, complete, run_agentic_loop
 from services.vultr_object_storage import VultrObjectStorage, VultrObjectStorageError
 from services.policy_leases import cancel_expiry, schedule_expiry
+from services.vultr_database import save_evidence_index
 from services.vultr_vector import (
+    IngestionResult,
     VultrVectorStore,
+    VultrVectorStoreError,
     ingest_manual,
     query_cve,
     query_manual,
@@ -69,26 +72,49 @@ async def run_pipeline(
     # ------------------------------------------------------------------
     await _emit("\n[STEP 2] Extracting network requirements from device manual...\n")
     extraction_raw = await complete(extraction_prompt(raw_pdf_text))
-    contract_a = _parse_contract_a(extraction_raw)
+    contract_a, extraction_fell_back = _parse_contract_a(extraction_raw)
     if source_doc_id:
         contract_a = contract_a.model_copy(update={"source_doc_id": source_doc_id})
-    await _emit(f"[STEP 2 DONE] Device: {contract_a.device_model} | Firmware: {contract_a.firmware_version} | Ports: {[p.port for p in contract_a.allowed_ports]}\n")
+    if extraction_fell_back:
+        await _emit(
+            f"[STEP 2 WARN] Nemotron did not return valid extraction JSON — using placeholder "
+            f"device data ({contract_a.device_model}); treat this run's policy as unverified "
+            f"until the manual is re-processed.\n"
+        )
+    else:
+        await _emit(f"[STEP 2 DONE] Device: {contract_a.device_model} | Firmware: {contract_a.firmware_version} | Ports: {[p.port for p in contract_a.allowed_ports]}\n")
 
     # ------------------------------------------------------------------
     # Step 5: Commit Contract A and chunks before any enforcement decision.
     # ------------------------------------------------------------------
     await _emit("\n[STEP 5] Chunking manual and storing Contract A in Vultr Vector Store...\n")
-    ingestion = await ingest_manual(raw_pdf_text, contract_a)
-    contract_a = contract_a.model_copy(update={"source_doc_id": ingestion.source_doc_id})
-    await publish_event("contract-a.extracted", ingestion.source_doc_id, contract_a.model_dump(mode="json"))
-    await _emit(
-        f"[STEP 5 DONE] Stored {ingestion.chunk_count} chunks in Vultr collection "
-        f"{ingestion.collection_id}; source vector {ingestion.source_doc_id}.\n"
-    )
+    try:
+        ingestion = await ingest_manual(raw_pdf_text, contract_a)
+        contract_a = contract_a.model_copy(update={"source_doc_id": ingestion.source_doc_id})
+        await publish_event("contract-a.extracted", ingestion.source_doc_id, contract_a.model_dump(mode="json"))
+        await _emit(
+            f"[STEP 5 DONE] Stored {ingestion.chunk_count} chunks in Vultr collection "
+            f"{ingestion.collection_id}; source vector {ingestion.source_doc_id}.\n"
+        )
+    except VultrVectorStoreError as exc:
+        await _emit(f"[STEP 5 WARN] Vector Store ingestion failed ({exc}) — continuing without vector storage.\n")
+        ingestion = IngestionResult(
+            collection_id="",
+            source_doc_id=contract_a.source_doc_id,
+            item_ids=(),
+            chunk_count=0,
+        )
 
-    await _emit("\n[MEMORY] Retrieving authoritative evidence through Vultr RAG...\n")
-    retrieved_context = await query_manual(ingestion.collection_id, contract_a)
-    await _emit("[MEMORY DONE] Manufacturer evidence attached to the decision.\n")
+    retrieved_context = ""
+    if ingestion.collection_id:
+        await _emit("\n[MEMORY] Retrieving authoritative evidence through Vultr RAG...\n")
+        try:
+            retrieved_context = await query_manual(ingestion.collection_id, contract_a)
+            await _emit("[MEMORY DONE] Manufacturer evidence attached to the decision.\n")
+        except VultrVectorStoreError as exc:
+            await _emit(f"[MEMORY WARN] Manual retrieval failed ({exc}) — proceeding without retrieved evidence.\n")
+    else:
+        await _emit("[MEMORY SKIPPED] No Vector Store collection available for this run.\n")
 
     # ------------------------------------------------------------------
     # Step 3 + 4 + 6: the tool-capable Vultr model checks CVE memory,
@@ -147,7 +173,7 @@ async def run_pipeline(
         expires_at=datetime.fromisoformat(enforcement["expires_at"]),
         receipt=receipt,
     )
-    schedule_expiry(lease)
+    await schedule_expiry(lease)
     evidence = EvidenceBundle(
         evidence_id=f"evidence-{uuid.uuid4().hex}",
         contract_a=contract_a,
@@ -165,6 +191,7 @@ async def run_pipeline(
     if storage.configured:
         evidence_key, evidence_hash = storage.seal_evidence(evidence)
         evidence = evidence.model_copy(update={"evidence_sha256": evidence_hash})
+        await save_evidence_index(evidence.evidence_id, evidence_key, evidence_hash)
     elif storage.strict:
         raise VultrObjectStorageError("Vultr Object Storage is required in strict mode")
 
@@ -176,12 +203,16 @@ async def run_pipeline(
     }
     await publish_event("contract-b.enforced", lease.lease_id, contract_b.model_dump(mode="json"))
     await publish_event("policy.enforced", lease.lease_id, event_payload)
-    vector = VultrVectorStore(collection_id=ingestion.collection_id)
-    await vector.add_item(
-        ingestion.collection_id,
-        json.dumps(event_payload, separators=(",", ":"), default=str),
-        f"Enforcement outcome for {contract_a.device_model}; lease {lease.lease_id}",
-    )
+    if ingestion.collection_id:
+        try:
+            vector = VultrVectorStore(collection_id=ingestion.collection_id)
+            await vector.add_item(
+                ingestion.collection_id,
+                json.dumps(event_payload, separators=(",", ":"), default=str),
+                f"Enforcement outcome for {contract_a.device_model}; lease {lease.lease_id}",
+            )
+        except VultrVectorStoreError as exc:
+            await _emit(f"[MEMORY WARN] Could not write enforcement outcome back to Vector Store ({exc}).\n")
     await _emit(f"[EVIDENCE SEALED] Lease {lease.lease_id}; object {evidence_key or 'strict-mode disabled'}.\n")
 
     return contract_b
@@ -233,7 +264,7 @@ async def retract_policy(device_id: str) -> dict:
     result = retract_firewall_rule(device_id)
     parsed = json.loads(result)
     if parsed.get("lease_id"):
-        cancel_expiry(parsed["lease_id"])
+        await cancel_expiry(parsed["lease_id"])
     return parsed
 
 
@@ -266,18 +297,26 @@ def _deterministic_policy(contract_a: ContractA, vpc_id: str) -> ContractB:
     )
 
 
-def _parse_contract_a(raw: str) -> ContractA:
-    """Parses the LLM's JSON output into a ContractA model. Falls back to a safe default on failure."""
+def _parse_contract_a(raw: str) -> tuple[ContractA, bool]:
+    """Parses the LLM's JSON output into a ContractA model.
+
+    Returns (contract, fell_back) — fell_back is True when the raw output could
+    not be parsed and a placeholder device was substituted, so callers can
+    surface that instead of silently reporting placeholder data as real.
+    """
     try:
         cleaned = raw.strip().strip("```json").strip("```").strip()
         data = json.loads(cleaned)
-        return ContractA(**data)
+        return ContractA(**data), False
     except Exception:
-        return ContractA(
-            device_model="Unknown_Device",
-            firmware_version="unknown",
-            allowed_ports=[],
-            source_doc_id="",
+        return (
+            ContractA(
+                device_model="Unknown_Device",
+                firmware_version="unknown",
+                allowed_ports=[],
+                source_doc_id="",
+            ),
+            True,
         )
 
 
