@@ -651,22 +651,32 @@ def _build_memo(
     cve = contract_b.cve_flagged
     has_cve = cve and cve not in ("NONE", "")
 
-    # For ALLOW citations use only manual/RAG evidence (not CVE JSON which
-    # mentions port numbers in mitigation text and corrupts the citation).
-    manual_evidence = tool_evidence.get("retrieved", "")
-
-    # Build a short human-readable summary of the highest-severity CVE for THREAT.
+    # Build a short human-readable CVE description for THREAT.
+    # RAG returns markdown/table prose, not raw JSON, so scan the CVE text for
+    # a sentence near the CVE id that reads like a real description.
     cve_description = ""
     if has_cve and tool_evidence.get("cve"):
         raw = tool_evidence["cve"]
-        # Pull the description field if present.
-        desc_match = re.search(r'"description"\s*:\s*"([^"]{20,200})"', raw)
+        # Try JSON description field first (ingest_cve script stores full records).
+        desc_match = re.search(r'"description"\s*:\s*"([^"]{20,300})"', raw)
         if desc_match:
             cve_description = desc_match.group(1).rstrip(".")
+        else:
+            # RAG returns markdown prose — look for a sentence after the CVE id.
+            cve_pos = raw.find(cve)
+            if cve_pos != -1:
+                window = raw[cve_pos: cve_pos + 400].replace("\n", " ")
+                for sep in ("):", "): ", " — ", ": "):
+                    idx = window.find(sep)
+                    if idx != -1 and idx < 100:
+                        candidate = window[idx + len(sep):].split(".")[0].strip()
+                        if len(candidate) > 30:
+                            cve_description = candidate
+                            break
     threat = (
         (
             f"CVE {cve} detected on {contract_a.device_model} firmware {contract_a.firmware_version} "
-            + (f"— {cve_description}." if cve_description else "— potential exploit via network-exposed ports.")
+            + (f"— {cve_description}." if cve_description else "— unauthenticated adjacent-network exploit risk.")
         ) if has_cve
         else (
             f"Unmanaged {contract_a.device_model} (firmware {contract_a.firmware_version}) "
@@ -693,19 +703,13 @@ def _build_memo(
     for rule in contract_b.firewall_rules:
         port_str = str(rule.port)
         if rule.action == "ALLOW":
-            justification = ""
-            # 1st choice: a manual/RAG passage that is clearly prose (not raw JSON).
-            if port_str in manual_evidence:
-                for sentence in manual_evidence.replace("\n", " ").split("."):
-                    s = sentence.strip()
-                    if port_str in s and len(s) > 10 and not s.startswith("{") and '"' not in s[:8]:
-                        justification = s[:160]
-                        break
-            # 2nd choice: the extracted Contract A reason (carries the page ref).
-            if not justification and rule.port in port_reasons:
+            # Always use the Contract A port reason — it carries the verified
+            # page reference (e.g. "p.29") and is deterministic. RAG evidence
+            # often returns meta-commentary ("no exact passages found") which
+            # corrupts the citation, so we skip it for ALLOW rules entirely.
+            if rule.port in port_reasons:
                 justification = f"Device manual — {port_reasons[rule.port]}"
-            # Fallback
-            if not justification:
+            else:
                 justification = f"Required by device manual for {contract_a.device_model} operation"
         else:
             if rule.port == 22:
