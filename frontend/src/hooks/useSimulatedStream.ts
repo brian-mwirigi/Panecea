@@ -2,6 +2,7 @@
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { config, endpoints, SAMPLE_MANUAL_TEXT } from "@/lib/config";
+import { extractPdfText } from "@/lib/pdf";
 import { tickDevice } from "@/lib/simulator";
 import type {
   AgentLogLine,
@@ -266,24 +267,19 @@ export function useSimulatedStream(): CommandCenterState {
           ts: Date.now(),
           level: "system",
           dim: false,
-          text: `[INGEST] Uploading manual "${file.name}" → ${vpc}`,
+          text: `[INGEST] Reading "${file.name}" in browser...`,
         },
       ]);
-      try {
-        const form = new FormData();
-        form.append("file", file);
-        form.append("vpc_id", vpc);
-        const res = await fetch(endpoints.manualsRun, {
-          method: "POST",
-          body: form,
-          headers: authHeaders(),
-        });
-        if (!res.ok) throw new Error(`HTTP ${res.status} from /manuals/run`);
-        const data = (await res.json()) as ContractB;
+
+      // Register the analyzed policy as a device + memo, regardless of which
+      // ingestion path produced the Contract B.
+      const finalize = (data: ContractB) => {
         const targetVpc = data.target_vpc_id || vpc;
         const device = deviceFromManual(model, targetVpc, data.firewall_rules);
         setDevices((prev) => [device, ...prev.filter((d) => d.vpc_id !== targetVpc)]);
-        setMemos((m) => [memoFromContractB({ ...data, target_vpc_id: targetVpc }, model), ...m].slice(0, MAX_MEMOS));
+        setMemos((m) =>
+          [memoFromContractB({ ...data, target_vpc_id: targetVpc }, model), ...m].slice(0, MAX_MEMOS),
+        );
         setThreats((prev) => [...prev, threatPointFromRules(data.firewall_rules)].slice(-MAX_THREAT_POINTS));
         pushLogs([
           {
@@ -294,6 +290,66 @@ export function useSimulatedStream(): CommandCenterState {
             text: `[DONE] Manual analyzed :: ${model} enforced at ${data.confidence_score}% confidence.`,
           },
         ]);
+      };
+
+      try {
+        // Extract the manual text in-browser (pdf.js) — far more reliable than
+        // the backend's server-side parser — then send clean text to /agent/run.
+        let text = "";
+        try {
+          text = await extractPdfText(file);
+        } catch (exc) {
+          const msg = exc instanceof Error ? exc.message : "unknown error";
+          pushLogs([
+            {
+              id: lid(),
+              ts: Date.now(),
+              level: "warn",
+              dim: false,
+              text: `[INGEST WARN] In-browser PDF read failed :: ${msg}. Falling back to server-side extraction.`,
+            },
+          ]);
+        }
+
+        if (text.length >= 200) {
+          pushLogs([
+            {
+              id: lid(),
+              ts: Date.now(),
+              level: "system",
+              dim: false,
+              text: `[INGEST] Extracted ${text.length.toLocaleString()} chars from "${file.name}" → analyzing ${vpc}`,
+            },
+          ]);
+          const res = await fetch(endpoints.agentRun, {
+            method: "POST",
+            headers: authHeaders({ "Content-Type": "application/json" }),
+            body: JSON.stringify({ raw_pdf_text: text, vpc_id: vpc }),
+          });
+          if (!res.ok) throw new Error(`HTTP ${res.status} from /agent/run`);
+          finalize((await res.json()) as ContractB);
+        } else {
+          // Too little text came out client-side — let the backend try the file.
+          pushLogs([
+            {
+              id: lid(),
+              ts: Date.now(),
+              level: "warn",
+              dim: false,
+              text: `[INGEST WARN] Only ${text.length} chars extracted in-browser — sending raw PDF to backend instead.`,
+            },
+          ]);
+          const form = new FormData();
+          form.append("file", file);
+          form.append("vpc_id", vpc);
+          const res = await fetch(endpoints.manualsRun, {
+            method: "POST",
+            body: form,
+            headers: authHeaders(),
+          });
+          if (!res.ok) throw new Error(`HTTP ${res.status} from /manuals/run`);
+          finalize((await res.json()) as ContractB);
+        }
       } catch (err) {
         const msg = err instanceof Error ? err.message : "unknown error";
         errorLog(`[ERROR] Manual ingestion failed :: ${msg}. The manual was not registered.`);
