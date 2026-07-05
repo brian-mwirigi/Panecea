@@ -53,8 +53,14 @@ export const endpoints = {
  * IntelliVue example from the project README.
  */
 export const SAMPLE_MANUAL_TEXT = [
-  "Philips IntelliVue Patient Monitor — Network Configuration Guide (Firmware B.01).",
-  "The monitor transmits HL7 patient data over TCP port 3200 to the central station.",
-  "Port 2050 is used for device discovery. All remote administration (SSH, port 22)",
-  "must remain disabled in clinical deployments to prevent lateral movement.",
+  "Philips IntelliVue Patient Monitor — Data Export Interface Programming Guide",
+  "(X2, MP, MX, FM Series, Release L.0, Firmware L.0).",
+  "Section 4 — Transport Protocols for the LAN Interface (p. 29):",
+  "'The current Protocol version uses the fixed UDP port 24105.",
+  "All messages sent from the Computer Client to the monitor must use this port number",
+  "as the destination port number.'",
+  "Section 5 — Connect Indication Event (p. 53):",
+  "UDP port 24005 is used for device discovery broadcasts.",
+  "All remote administration (SSH, port 22) must remain disabled in clinical",
+  "deployments to prevent lateral movement across the hospital network.",
 ].join(" ");

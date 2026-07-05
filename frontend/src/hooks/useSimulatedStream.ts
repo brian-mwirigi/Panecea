@@ -423,12 +423,14 @@ export function useSimulatedStream(): CommandCenterState {
       if (config.useMock || !willOverride) return;
 
       try {
-        const res = await fetch(endpoints.policy(deviceId), {
+        // The backend keys active policies by VPC id, not the client-side row id.
+        const policyKey = device?.vpc_id ?? deviceId;
+        const res = await fetch(endpoints.policy(policyKey), {
           method: "DELETE",
           headers: authHeaders(),
         });
         if (res.status === 404) {
-          errorLog(`[HUMAN OVERRIDE WARN] Backend reports no active policy for '${deviceId}'.`);
+          errorLog(`[HUMAN OVERRIDE WARN] Backend reports no active policy for '${policyKey}'.`);
         } else if (!res.ok) {
           errorLog(`[HUMAN OVERRIDE ERROR] Backend returned HTTP ${res.status}.`);
         }
