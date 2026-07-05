@@ -31,6 +31,38 @@ async function loadPdfjs(): Promise<PdfjsModule> {
   return pdfjsPromise;
 }
 
+/**
+ * Bound a (possibly huge) manual down to the parts that matter for policy
+ * extraction, so we never send a 500k-char payload that blows past the model's
+ * context window and times out the backend (HTTP 502).
+ *
+ * Keeps the head (device model / firmware usually live up front) plus windows
+ * of text around every network/port keyword hit, up to `maxChars`.
+ */
+export function curateManualText(text: string, maxChars = 16000): string {
+  if (text.length <= maxChars) return text;
+
+  const head = text.slice(0, 2500);
+  let used = head.length;
+  const windows: string[] = [];
+  const seenBuckets = new Set<number>();
+  const keyword =
+    /(port\s*\d|\bports?\b|\btcp\b|\budp\b|protocol|firewall|network|ethernet|\blan\b|rs-?232|dicom|hl7)/gi;
+
+  let match: RegExpExecArray | null;
+  while ((match = keyword.exec(text)) !== null && used < maxChars) {
+    const start = Math.max(0, match.index - 400);
+    const bucket = Math.floor(start / 800);
+    if (seenBuckets.has(bucket)) continue;
+    seenBuckets.add(bucket);
+    const chunk = text.slice(start, match.index + 400);
+    windows.push(chunk);
+    used += chunk.length;
+  }
+
+  return `${head}\n...\n${windows.join("\n...\n")}`.slice(0, maxChars);
+}
+
 /** Extract all text from a PDF file in the browser. Returns normalized text. */
 export async function extractPdfText(file: File): Promise<string> {
   const pdfjs = await loadPdfjs();
