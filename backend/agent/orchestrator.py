@@ -171,10 +171,10 @@ async def run_pipeline(
         # demo is reproducible and drift only reflects a real document change.
         contract_a, extraction_fell_back = demo_contract, False
     else:
-        # Nemotron's context window can't handle full PDFs (300+ pages = 500k+
-        # chars). Port requirements always appear in early sections, so take the
-        # first 6000 chars which reliably covers the network chapter.
-        extraction_text = manual_text[:6000]
+        # Nemotron can't ingest a full 300+ page manual (500k+ chars). Pick a
+        # focused window: the document head (device identity) plus the region
+        # around the first real port declaration (the network section).
+        extraction_text = _extraction_window(manual_text)
         extraction_raw = await complete(extraction_prompt(extraction_text))
         contract_a, extraction_fell_back = _parse_contract_a(extraction_raw)
     if source_doc_id:
@@ -555,6 +555,25 @@ def _confidence_explanation(
     cve_note = "; CVE evidence introduced additional uncertainty" if (cve_flagged and cve_flagged not in ("NONE", "")) else ""
     grounding_note = f"; {grounded}/{total} rules grounded in cited evidence" if total > 0 else ""
     return f"{depth}{cve_note}{grounding_note}"
+
+
+def _extraction_window(text: str, budget: int = 7000) -> str:
+    """Pick the most informative slice of a large manual for LLM extraction.
+
+    Full device manuals are hundreds of pages; the port section is usually deep
+    inside (e.g. "page 29"), so the first N chars miss it entirely. This keeps
+    the document head (device model / title) and splices in the region around
+    the first concrete port declaration (e.g. "UDP port 24105", "TCP 3200").
+    """
+    if len(text) <= budget:
+        return text
+    head = text[:1500]
+    match = re.search(r"(?:UDP|TCP|port)\W{0,12}\d{2,5}", text, re.IGNORECASE)
+    if not match:
+        return text[:budget]
+    start = max(0, match.start() - 900)
+    body = text[start: start + (budget - len(head) - 12)]
+    return f"{head}\n[...]\n{body}"
 
 
 def _cve_description_lookup(cve_id: str) -> str:
