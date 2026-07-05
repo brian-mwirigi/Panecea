@@ -161,6 +161,8 @@ Evidence retrieved from Vultr Vector Store:
 {retrieved_context or "No additional evidence retrieved."}
 
 Your task — execute in this order:
+0. PLAN FIRST: before any tool call, output a short numbered plan (2-4 steps) describing how
+   you will investigate and decide. Start it with "PLAN:". This makes your reasoning auditable.
 1. Review the evidence above, then call retrieve_document for any targeted passage needed
    to confirm which ports are genuinely required and why.
 2. Call check_cve to identify known vulnerabilities for this device and firmware.
@@ -199,19 +201,31 @@ Manual excerpt:
     ]
 
 
-def incident_memo_prompt(contract_b: dict) -> list[dict]:
-    """Step 7 — Expand the memo_text into a full incident report for the frontend."""
+def incident_memo_prompt(contract_b: dict, retrieved_context: str = "", cve_evidence: str = "") -> list[dict]:
+    """Step 7 — Expand the memo_text into a full incident report WITH a citation trail."""
     return [
         {"role": "system", "content": SYSTEM_PROMPT},
         {
             "role": "user",
-            "content": f"""Write a formal 3-sentence hospital network incident memo based on this firewall decision:
+            "content": f"""Write a formal hospital network incident memo based on this firewall decision.
+Every port decision MUST be grounded in the evidence below — cite the specific manual passage or
+CVE record that justifies it. Do not invent citations; only cite from the evidence provided.
 
+FIREWALL DECISION:
 {contract_b}
 
-Format:
+MANUAL EVIDENCE (retrieved from Vultr Vector Store):
+{retrieved_context or "No manual evidence retrieved."}
+
+CVE EVIDENCE:
+{cve_evidence or "No CVE evidence retrieved."}
+
+Format exactly:
 THREAT: <what was detected>
 ACTION: <what the firewall did>
-STATUS: <current network status of the device>""",
+STATUS: <current network status of the device>
+CITATIONS:
+  - Port <n> (<ALLOW|DENY>): <one-line justification grounded in the evidence above>
+  (one line per firewall rule; if evidence is missing for a rule, write "no supporting evidence — flagged for manual review")""",
         },
     ]

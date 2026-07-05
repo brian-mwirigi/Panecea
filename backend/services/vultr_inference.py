@@ -45,11 +45,11 @@ class ToolCallRequest:
     arguments: dict = field(default_factory=dict)
 
 
-def _base_payload(model: str, messages: list[dict]) -> dict:
+def _base_payload(model: str, messages: list[dict], max_tokens: int | None = None) -> dict:
     return {
         "model": model,
         "messages": messages,
-        "max_tokens": VULTR_MAX_TOKENS,
+        "max_tokens": max_tokens or VULTR_MAX_TOKENS,
         "temperature": VULTR_TEMPERATURE,
     }
 
@@ -58,9 +58,9 @@ def _base_payload(model: str, messages: list[dict]) -> dict:
 # Streaming (reasoning + content tokens)
 # ---------------------------------------------------------------------------
 
-async def _stream_raw(model: str, messages: list[dict]) -> AsyncGenerator[StreamToken, None]:
+async def _stream_raw(model: str, messages: list[dict], max_tokens: int | None = None) -> AsyncGenerator[StreamToken, None]:
     """Streams reasoning and content tokens from a single model, labelling each."""
-    payload = {**_base_payload(model, messages), "stream": True}
+    payload = {**_base_payload(model, messages, max_tokens), "stream": True}
 
     async with httpx.AsyncClient(timeout=VULTR_INFERENCE_TIMEOUT) as client:
         async with client.stream(
@@ -77,36 +77,39 @@ async def _stream_raw(model: str, messages: list[dict]) -> AsyncGenerator[Stream
                 if data.strip() == "[DONE]":
                     break
                 try:
-                    delta = json.loads(data)["choices"][0]["delta"]
+                    choices = json.loads(data).get("choices") or []
+                    if not choices:
+                        continue
+                    delta = choices[0].get("delta") or {}
                     reasoning = delta.get("reasoning") or delta.get("reasoning_content") or ""
                     content = delta.get("content") or ""
                     if reasoning:
                         yield StreamToken(text=reasoning, type="reasoning")
                     if content:
                         yield StreamToken(text=content, type="content")
-                except (json.JSONDecodeError, KeyError):
+                except (json.JSONDecodeError, KeyError, IndexError, TypeError):
                     continue
 
 
-async def stream_completion(messages: list[dict]) -> AsyncGenerator[StreamToken, None]:
+async def stream_completion(messages: list[dict], max_tokens: int | None = None) -> AsyncGenerator[StreamToken, None]:
     """
     Public streaming interface. Falls back to VULTR_FALLBACK_MODEL on timeout/error.
     Yields StreamToken objects so callers can distinguish reasoning from content.
     """
     try:
-        async for token in _stream_raw(VULTR_MAIN_MODEL, messages):
+        async for token in _stream_raw(VULTR_MAIN_MODEL, messages, max_tokens):
             yield token
     except httpx.TimeoutException:
         yield StreamToken(text=f"[WARN: {VULTR_MAIN_MODEL} timed out — switching to {VULTR_FALLBACK_MODEL}]", type="reasoning")
         try:
-            async for token in _stream_raw(VULTR_FALLBACK_MODEL, messages):
+            async for token in _stream_raw(VULTR_FALLBACK_MODEL, messages, max_tokens):
                 yield token
         except Exception as e:
             yield StreamToken(text=f"[ERROR: {e}]", type="reasoning")
     except httpx.HTTPStatusError as e:
         yield StreamToken(text=f"[WARN: {VULTR_MAIN_MODEL} HTTP {e.response.status_code} — switching to {VULTR_FALLBACK_MODEL}]", type="reasoning")
         try:
-            async for token in _stream_raw(VULTR_FALLBACK_MODEL, messages):
+            async for token in _stream_raw(VULTR_FALLBACK_MODEL, messages, max_tokens):
                 yield token
         except Exception as fallback_err:
             yield StreamToken(text=f"[ERROR: {fallback_err}]", type="reasoning")
@@ -114,11 +117,11 @@ async def stream_completion(messages: list[dict]) -> AsyncGenerator[StreamToken,
         yield StreamToken(text=f"[ERROR: {e}]", type="reasoning")
 
 
-async def complete(messages: list[dict]) -> str:
+async def complete(messages: list[dict], max_tokens: int | None = None) -> str:
     """Collects full streamed response as a single string. Prefers content tokens; falls back to reasoning if content is empty."""
     content_parts = []
     reasoning_parts = []
-    async for token in stream_completion(messages):
+    async for token in stream_completion(messages, max_tokens):
         if token.type == "content":
             content_parts.append(token.text)
         else:

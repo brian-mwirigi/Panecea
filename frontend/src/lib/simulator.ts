@@ -21,7 +21,7 @@ const randInt = (min: number, max: number) => Math.floor(rand(min, max + 1));
 const pick = <T>(arr: readonly T[]): T => arr[Math.floor(Math.random() * arr.length)];
 
 const DEVICE_MODELS = [
-  { model: "Philips_IntelliVue", firmware: "B.01", ports: [3200, 2050] },
+  { model: "Philips_IntelliVue", firmware: "B.01", ports: [24105, 24005] },
   { model: "GE_CARESCAPE_B650", firmware: "2.4", ports: [104, 2575] },
   { model: "Medtronic_Puritan_840", firmware: "4.07", ports: [502, 44818] },
   { model: "Draeger_Evita_V500", firmware: "A.11", ports: [3200, 20000] },
@@ -101,7 +101,7 @@ export function ecgSample(phase: number, jitter = 0.04): number {
 const STEP_LINES: { step: number; level: LogLevel; text: string }[] = [
   { step: 1, level: "system", text: "Ingest :: PDF manual pulled from Vultr Object Storage." },
   { step: 2, level: "info", text: "Extract :: Vultr Serverless Inference parsing device spec sheet..." },
-  { step: 2, level: "info", text: "Extract :: Detected protocol HL7 over TCP on port 3200." },
+  { step: 2, level: "info", text: "Extract :: Detected Philips Data Export Protocol on UDP port 24105." },
   { step: 2, level: "success", text: "Extract :: Firmware B.01 confirmed for Philips_IntelliVue." },
   { step: 3, level: "warn", text: "Cross-Check :: Querying Vultr Vector Store CVE memory for device + firmware..." },
   { step: 3, level: "threat", text: "Cross-Check :: Match found — lateral-movement risk on port 22." },
@@ -144,7 +144,7 @@ export function ambientLine(): AgentLogLine {
 export function makeIncidentMemo(device?: Device): IncidentMemo {
   const spec = device
     ? { model: device.model, ports: device.ports, vpc: device.vpc_id }
-    : { model: pick(DEVICE_MODELS).model, ports: [3200], vpc: "vpc-medical-01" };
+    : { model: pick(DEVICE_MODELS).model, ports: [24105], vpc: "vpc-medical-01" };
   const confidence = randInt(88, 99);
   const cve = pick(CVES);
   const rules: ContractB["firewall_rules"] = [

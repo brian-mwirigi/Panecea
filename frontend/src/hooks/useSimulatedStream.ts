@@ -2,18 +2,10 @@
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { config, endpoints, SAMPLE_MANUAL_TEXT } from "@/lib/config";
-import {
-  agentRunTrace,
-  ambientLine,
-  makeIncidentMemo,
-  nextThreatPoint,
-  seedDevices,
-  seedMemos,
-  seedThreatSeries,
-  tickDevice,
-} from "@/lib/simulator";
+import { tickDevice } from "@/lib/simulator";
 import type {
   AgentLogLine,
+  AuditEntry,
   ContractB,
   DashboardStats,
   Device,
@@ -23,13 +15,9 @@ import type {
   ThreatPoint,
 } from "@/lib/types";
 
-const MAX_LOG_LINES = 120;
-const MAX_MEMOS = 8;
-
-function authHeaders(): HeadersInit {
-  const token = typeof window === "undefined" ? null : sessionStorage.getItem("panacea_access_token");
-  return token ? { Authorization: `Bearer ${token}` } : {};
-}
+const MAX_LOG_LINES = 400;
+const MAX_MEMOS = 12;
+const MAX_THREAT_POINTS = 40;
 
 /** How the terminal/memos are currently sourced. */
 export type DataMode = "mock" | "live" | "fallback";
@@ -40,46 +28,104 @@ export interface CommandCenterState {
   memos: IncidentMemo[];
   threats: ThreatPoint[];
   stats: DashboardStats;
+  auditEntries: AuditEntry[];
+  auditLoading: boolean;
   autonomous: boolean;
   running: boolean;
+  uploading: boolean;
   dataMode: DataMode;
   setAutonomous: (v: boolean) => void;
   runAgent: () => void;
   overrideDevice: (deviceId: string) => void;
+  uploadManual: (file: File) => Promise<void>;
+  refreshAudit: () => Promise<void>;
+  explainMemo: (memo: IncidentMemo) => Promise<string>;
 }
 
 const lid = () => `log_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 7)}`;
 
-/** Infer a log severity/colour from the streamed reasoning text. */
-function levelFromText(text: string, type?: string): LogLevel {
-  const t = text.toLowerCase();
-  if (/(deny|block|threat|attack|malicious|breach|lateral)/.test(t)) return "threat";
-  if (/(allow|success|confirmed|complete|applied|approved)/.test(t)) return "success";
-  if (/(warn|cve|risk|vulnerab|anomal)/.test(t)) return "warn";
-  if (type && type !== "reasoning") return "system";
-  return "info";
+/** Authorization header for privileged endpoints, when an operator token is set. */
+function authHeaders(base: Record<string, string> = {}): Record<string, string> {
+  return config.operatorToken
+    ? { ...base, Authorization: `Bearer ${config.operatorToken}` }
+    : base;
+}
+
+const MARKER_RE = /^\s*\[[^\]]+\]/;
+
+/**
+ * Classify one complete line from the backend WebSocket stream.
+ *
+ * The backend emits two kinds of tokens:
+ *   - reasoning: bracket "[STEP N]" progress markers + the model's raw
+ *     chain-of-thought prose.
+ *   - content:   a "[STEP 7 DONE]" marker + the final Contract B streamed as
+ *     JSON, token-by-token.
+ *
+ * We surface the bracket markers as real milestone/error rows, fold the model's
+ * prose into a collapsed "Reasoning" block, and drop the raw JSON decision
+ * stream entirely (it's already rendered as an Incident Memo).
+ */
+function classifyStreamLine(line: string, type: string): AgentLogLine | null {
+  const clean = line.trim();
+  if (!clean) return null;
+  const isMarker = MARKER_RE.test(clean);
+
+  // Suppress the raw JSON decision firehose — redundant with the memo panel.
+  if (!isMarker) {
+    if (type === "content") return null;
+    return { id: lid(), ts: Date.now(), level: "info", dim: true, text: clean };
+  }
+
+  const upper = clean.toUpperCase();
+  let level: LogLevel;
+  if (/ERROR|FAIL|EXCEPTION|TRACEBACK|REFUSED/.test(upper)) level = "threat";
+  else if (/WARN|UNAVAILABLE|FALLBACK|DRIFT|TIMEOUT|OVERRIDE|\bHTTP\s*[45]\d\d|\b4\d\d\b|\b5\d\d\b/.test(upper))
+    level = "warn";
+  else if (/DONE|SEALED|ENFORCED|APPLIED|CONFIDENCE|READY/.test(upper)) level = "success";
+  else level = "system";
+
+  return { id: lid(), ts: Date.now(), level, dim: false, text: clean };
 }
 
 /** Map a backend Contract B payload to a UI incident memo. */
-function memoFromContractB(data: ContractB, devices: Device[]): IncidentMemo {
-  const match = devices.find((d) => d.vpc_id === data.target_vpc_id);
+function memoFromContractB(data: ContractB, deviceModel: string): IncidentMemo {
   return {
     ...data,
     id: `memo_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 7)}`,
-    device_model: match?.model ?? "Philips_IntelliVue",
+    device_model: deviceModel,
     created_at: Date.now(),
   };
 }
 
-/**
- * Reflect an enforced Contract B policy onto the matching device so the fleet
- * table visibly shows the lockdown (e.g. port 22 DENY / blocked, 3200 ALLOW).
- */
-function applyEnforcement(
-  devices: Device[],
-  vpcId: string,
-  rules: FirewallRule[],
-): Device[] {
+/** Human-friendly device model + VPC slug derived from an uploaded filename. */
+function manualIdentity(filename: string): { model: string; vpc: string } {
+  const base = filename.replace(/\.[^.]+$/, "").trim();
+  const model = base.replace(/[_-]+/g, " ").replace(/\s+/g, " ").trim() || "Ingested Device";
+  const slug =
+    base.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "").slice(0, 16) ||
+    Math.random().toString(36).slice(2, 8);
+  return { model, vpc: `vpc-${slug}` };
+}
+
+/** Build a new fleet Device from an ingested manual + its Contract B policy. */
+function deviceFromManual(model: string, vpc: string, rules: FirewallRule[]): Device {
+  const allow = rules.filter((r) => r.action === "ALLOW").map((r) => r.port);
+  return {
+    id: `dev_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 6)}`,
+    model,
+    vpc_id: vpc,
+    firmware: "from manual",
+    status: "secure",
+    bpm: 74,
+    ports: allow.length ? allow : rules.map((r) => r.port),
+    last_seen: Date.now(),
+    firewallRules: rules,
+  };
+}
+
+/** Reflect an enforced Contract B policy onto the matching device. */
+function applyEnforcement(devices: Device[], vpcId: string, rules: FirewallRule[]): Device[] {
   return devices.map((d) =>
     d.vpc_id === vpcId
       ? { ...d, firewallRules: rules, status: d.status === "override" ? "override" : "secure" }
@@ -87,135 +133,179 @@ function applyEnforcement(
   );
 }
 
+/** A real network-activity point derived from an actual decision's rules. */
+function threatPointFromRules(rules: FirewallRule[]): ThreatPoint {
+  return {
+    time: new Date().toLocaleTimeString([], {
+      hour: "2-digit",
+      minute: "2-digit",
+      second: "2-digit",
+    }),
+    allowed: rules.filter((r) => r.action === "ALLOW").length,
+    blocked: rules.filter((r) => r.action === "DENY").length,
+    anomalies: 0,
+  };
+}
+
 /**
  * Central data source for the Command Center.
  *
- * Device vitals, the heartbeat waveform and the threat chart are always
- * simulated (the backend does not provide them). The agent reasoning terminal
- * and incident memos come from the live backend when NEXT_PUBLIC_USE_MOCK is
- * "false", with an automatic fallback to the simulator if the backend is
- * unreachable so the demo never shows a dead screen.
+ * There is no simulated telemetry: the fleet starts empty and every device,
+ * memo, reasoning line and audit entry comes from the live backend. Devices are
+ * created by ingesting a real PDF manual. Anything that fails is written to the
+ * terminal's error log rather than being faked. (The heartbeat waveform is the
+ * only client-side visual — the backend does not stream device vitals.)
  */
 export function useSimulatedStream(): CommandCenterState {
   const [devices, setDevices] = useState<Device[]>([]);
   const [logs, setLogs] = useState<AgentLogLine[]>([]);
   const [memos, setMemos] = useState<IncidentMemo[]>([]);
   const [threats, setThreats] = useState<ThreatPoint[]>([]);
+  const [auditEntries, setAuditEntries] = useState<AuditEntry[]>([]);
+  const [auditLoading, setAuditLoading] = useState(false);
   const [autonomous, setAutonomous] = useState(true);
   const [running, setRunning] = useState(false);
+  const [uploading, setUploading] = useState(false);
   const [dataMode, setDataMode] = useState<DataMode>(config.useMock ? "mock" : "live");
 
-  const runTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const devicesRef = useRef<Device[]>([]);
   const wsConnectedRef = useRef(false);
+  const streamBufRef = useRef<{ reasoning: string; content: string }>({ reasoning: "", content: "" });
 
   useEffect(() => {
     devicesRef.current = devices;
   }, [devices]);
 
-  // Seed the simulated visual layer once on mount (client-side).
+  // Boot line only — no seeded devices, memos or threat history.
+  /* eslint-disable react-hooks/set-state-in-effect */
   useEffect(() => {
-    const initial = setTimeout(() => {
-      const seededDevices = seedDevices(6);
-      setDevices(seededDevices);
-      setThreats(seedThreatSeries(24));
-      if (config.useMock) setMemos(seedMemos(seededDevices, 3));
-      setLogs([
-        {
-          id: "boot",
-          ts: Date.now(),
-          level: "system",
-          text: config.useMock
-            ? "Command Center online :: monitoring hospital network immune system (simulated)."
-            : "Command Center online :: connecting to live agent backend...",
-        },
-      ]);
-    }, 0);
-    return () => clearTimeout(initial);
+    setLogs([
+      {
+        id: "boot",
+        ts: Date.now(),
+        level: "system",
+        text: config.useMock
+          ? "Command Center offline :: set NEXT_PUBLIC_USE_MOCK=false and a backend URL to stream live agent activity."
+          : "[BOOT] Command Center online :: connecting to live agent backend...",
+      },
+    ]);
   }, []);
+  /* eslint-enable react-hooks/set-state-in-effect */
 
   const pushLogs = useCallback((incoming: AgentLogLine[]) => {
     setLogs((prev) => [...prev, ...incoming].slice(-MAX_LOG_LINES));
   }, []);
 
-  // ---- Mock agent run: stream a scripted trace, then emit a simulated memo.
-  const runAgentMock = useCallback(() => {
-    setRunning(true);
-    const trace = agentRunTrace();
-    trace.forEach((line, i) => setTimeout(() => pushLogs([line]), i * 550));
-    runTimer.current = setTimeout(
-      () => {
-        const target = devicesRef.current.find((d) => d.status !== "override");
-        const memo = makeIncidentMemo(target);
-        setMemos((m) => [memo, ...m].slice(0, MAX_MEMOS));
-        setDevices((prev) => applyEnforcement(prev, memo.target_vpc_id, memo.firewall_rules));
-        const denyBoost = memo.firewall_rules.filter((r) => r.action === "DENY").length;
-        setThreats((prev) => (prev.length ? [...prev.slice(1), nextThreatPoint(denyBoost)] : prev));
-        setRunning(false);
-      },
-      trace.length * 550 + 400,
-    );
-  }, [pushLogs]);
+  const errorLog = useCallback(
+    (text: string) => pushLogs([{ id: lid(), ts: Date.now(), level: "threat", dim: false, text }]),
+    [pushLogs],
+  );
 
   // ---- Live agent run: POST to the backend and render the returned Contract B.
   const runAgentLive = useCallback(async () => {
     setRunning(true);
-    let denyBoost = 0;
-    const vpc = devicesRef.current.find((d) => d.status !== "override")?.vpc_id ?? config.vpcId;
+    const target = devicesRef.current.find((d) => d.status !== "override");
+    const vpc = target?.vpc_id ?? "vpc-medical-01";
     pushLogs([
-      { id: lid(), ts: Date.now(), level: "system", text: `Agent run requested for ${vpc}...` },
+      { id: lid(), ts: Date.now(), level: "system", dim: false, text: `[RUN] Agent run requested for ${vpc}...` },
     ]);
     try {
       const res = await fetch(endpoints.agentRun, {
         method: "POST",
-        headers: { "Content-Type": "application/json", ...authHeaders() },
+        headers: authHeaders({ "Content-Type": "application/json" }),
         body: JSON.stringify({ raw_pdf_text: SAMPLE_MANUAL_TEXT, vpc_id: vpc }),
       });
-      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      if (!res.ok) throw new Error(`HTTP ${res.status} from /agent/run`);
       const data = (await res.json()) as ContractB;
-      const memo = memoFromContractB(data, devicesRef.current);
+      const memo = memoFromContractB(data, target?.model ?? data.target_vpc_id);
       setMemos((m) => [memo, ...m].slice(0, MAX_MEMOS));
       setDevices((prev) => applyEnforcement(prev, data.target_vpc_id, data.firewall_rules));
-      denyBoost = data.firewall_rules.filter((r) => r.action === "DENY").length;
+      setThreats((prev) => [...prev, threatPointFromRules(data.firewall_rules)].slice(-MAX_THREAT_POINTS));
       pushLogs([
         {
           id: lid(),
           ts: Date.now(),
           level: "success",
-          text: `Contract B received :: confidence ${data.confidence_score}% for ${data.target_vpc_id}.`,
+          dim: false,
+          text: `[DONE] Contract B received :: ${data.confidence_score}% confidence for ${data.target_vpc_id}.`,
         },
       ]);
     } catch (err) {
       const msg = err instanceof Error ? err.message : "unknown error";
-      setDataMode("fallback");
+      errorLog(`[ERROR] Agent run failed :: ${msg}`);
+    } finally {
+      setRunning(false);
+    }
+  }, [pushLogs, errorLog]);
+
+  const runAgent = useCallback(() => {
+    if (running || uploading) return;
+    if (config.useMock) {
+      errorLog("[ERROR] No live backend configured — agent run unavailable in offline mode.");
+      return;
+    }
+    runAgentLive();
+  }, [running, uploading, runAgentLive, errorLog]);
+
+  // ---- Manual ingestion: drop in a device-manual PDF. The agent reads it,
+  // reasons over the WebSocket, returns Contract B, and the manual is
+  // registered as a new device in the fleet with its enforced policy.
+  const uploadManual = useCallback(
+    async (file: File) => {
+      if (uploading || running) return;
+      if (config.useMock) {
+        errorLog("[ERROR] No live backend configured — manual ingestion unavailable in offline mode.");
+        return;
+      }
+      setUploading(true);
+      setRunning(true);
+      const { model, vpc } = manualIdentity(file.name);
       pushLogs([
         {
           id: lid(),
           ts: Date.now(),
-          level: "warn",
-          text: `Agent run failed (${msg}) :: showing simulated decision.`,
+          level: "system",
+          dim: false,
+          text: `[INGEST] Uploading manual "${file.name}" → ${vpc}`,
         },
       ]);
-      const target = devicesRef.current.find((d) => d.status !== "override");
-      const memo = makeIncidentMemo(target);
-      setMemos((m) => [memo, ...m].slice(0, MAX_MEMOS));
-      setDevices((prev) => applyEnforcement(prev, memo.target_vpc_id, memo.firewall_rules));
-      denyBoost = memo.firewall_rules.filter((r) => r.action === "DENY").length;
-    } finally {
-      setThreats((prev) =>
-        prev.length ? [...prev.slice(1), nextThreatPoint(denyBoost)] : prev,
-      );
-      setRunning(false);
-    }
-  }, [pushLogs]);
+      try {
+        const form = new FormData();
+        form.append("file", file);
+        form.append("vpc_id", vpc);
+        const res = await fetch(endpoints.manualsRun, {
+          method: "POST",
+          body: form,
+          headers: authHeaders(),
+        });
+        if (!res.ok) throw new Error(`HTTP ${res.status} from /manuals/run`);
+        const data = (await res.json()) as ContractB;
+        const targetVpc = data.target_vpc_id || vpc;
+        const device = deviceFromManual(model, targetVpc, data.firewall_rules);
+        setDevices((prev) => [device, ...prev.filter((d) => d.vpc_id !== targetVpc)]);
+        setMemos((m) => [memoFromContractB({ ...data, target_vpc_id: targetVpc }, model), ...m].slice(0, MAX_MEMOS));
+        setThreats((prev) => [...prev, threatPointFromRules(data.firewall_rules)].slice(-MAX_THREAT_POINTS));
+        pushLogs([
+          {
+            id: lid(),
+            ts: Date.now(),
+            level: "success",
+            dim: false,
+            text: `[DONE] Manual analyzed :: ${model} enforced at ${data.confidence_score}% confidence.`,
+          },
+        ]);
+      } catch (err) {
+        const msg = err instanceof Error ? err.message : "unknown error";
+        errorLog(`[ERROR] Manual ingestion failed :: ${msg}. The manual was not registered.`);
+      } finally {
+        setRunning(false);
+        setUploading(false);
+      }
+    },
+    [uploading, running, pushLogs, errorLog],
+  );
 
-  const runAgent = useCallback(() => {
-    if (running) return;
-    if (config.useMock) runAgentMock();
-    else runAgentLive();
-  }, [running, runAgentMock, runAgentLive]);
-
-  // ---- Live WebSocket: stream agent reasoning tokens into the terminal.
+  // ---- Live WebSocket: stream + classify agent reasoning into the terminal.
   useEffect(() => {
     if (config.useMock) return;
 
@@ -237,34 +327,34 @@ export function useSimulatedStream(): CommandCenterState {
         wsConnectedRef.current = true;
         setDataMode("live");
         pushLogs([
-          { id: lid(), ts: Date.now(), level: "system", text: "Live agent stream connected." },
+          { id: lid(), ts: Date.now(), level: "success", dim: false, text: "[BOOT] Live agent stream connected." },
         ]);
       };
 
       ws.onmessage = (ev) => {
         let text = "";
-        let type: string | undefined;
+        let type = "reasoning";
         try {
           const msg = JSON.parse(ev.data);
           text = msg.text ?? msg.message ?? "";
-          type = msg.type;
+          type = msg.type ?? "reasoning";
         } catch {
           text = typeof ev.data === "string" ? ev.data : "";
         }
         if (!text) return;
-        // Backend emits {type:"reasoning"} for the model's thinking (rendered
-        // dim) and {type:"content"} for its decisions/actions (bright, with
-        // semantic colour from the text).
-        const isReasoning = type === "reasoning";
-        pushLogs([
-          {
-            id: lid(),
-            ts: Date.now(),
-            level: isReasoning ? "info" : levelFromText(text, type),
-            dim: isReasoning,
-            text,
-          },
-        ]);
+
+        // Buffer tokens and only emit complete, newline-delimited lines so the
+        // token-by-token firehose becomes clean, classifiable rows.
+        const key = type === "content" ? "content" : "reasoning";
+        const combined = streamBufRef.current[key] + text;
+        const segments = combined.split("\n");
+        streamBufRef.current[key] = segments.pop() ?? "";
+        const out: AgentLogLine[] = [];
+        for (const seg of segments) {
+          const entry = classifyStreamLine(seg, key);
+          if (entry) out.push(entry);
+        }
+        if (out.length) pushLogs(out);
       };
 
       ws.onerror = () => {
@@ -274,19 +364,12 @@ export function useSimulatedStream(): CommandCenterState {
       ws.onclose = () => {
         wsConnectedRef.current = false;
         if (closed) return;
-        if (attempts < 3) {
+        if (attempts < 4) {
           attempts += 1;
           retry = setTimeout(connect, 2000 * attempts);
         } else {
           setDataMode("fallback");
-          pushLogs([
-            {
-              id: lid(),
-              ts: Date.now(),
-              level: "warn",
-              text: "Live stream unavailable :: falling back to simulated telemetry.",
-            },
-          ]);
+          errorLog("[ERROR] Live agent stream unavailable :: backend offline. Reasoning will not stream until it reconnects.");
         }
       };
     };
@@ -298,43 +381,15 @@ export function useSimulatedStream(): CommandCenterState {
       if (retry) clearTimeout(retry);
       ws?.close();
     };
-  }, [pushLogs]);
+  }, [pushLogs, errorLog]);
 
-  // ---- Ambient telemetry: vitals + threat chart are always simulated. Idle
-  // log lines run in mock mode, or in live mode while the stream is down.
+  // Cosmetic device vitals for the heartbeat waveform (backend has no vitals).
   useEffect(() => {
     const vitals = setInterval(() => {
-      setDevices((prev) => prev.map(tickDevice));
+      setDevices((prev) => (prev.length ? prev.map(tickDevice) : prev));
     }, 2500);
-
-    const ambient = setInterval(() => {
-      if (config.useMock || !wsConnectedRef.current) pushLogs([ambientLine()]);
-    }, 3800);
-
-    const series = setInterval(() => {
-      setThreats((prev) => (prev.length ? [...prev.slice(1), nextThreatPoint()] : prev));
-    }, 12000);
-
-    return () => {
-      clearInterval(vitals);
-      clearInterval(ambient);
-      clearInterval(series);
-    };
-  }, [pushLogs]);
-
-  // In autonomous mode, kick off agent runs periodically (gentler when live).
-  useEffect(() => {
-    if (!config.useMock || !autonomous) return;
-    const id = setInterval(() => runAgent(), 16000);
-    return () => clearInterval(id);
-  }, [autonomous, runAgent]);
-
-  useEffect(
-    () => () => {
-      if (runTimer.current) clearTimeout(runTimer.current);
-    },
-    [],
-  );
+    return () => clearInterval(vitals);
+  }, []);
 
   // Human Override: retract the active policy for a device
   // (maps to DELETE /api/v1/policy/{device_id}).
@@ -343,14 +398,13 @@ export function useSimulatedStream(): CommandCenterState {
       const device = devicesRef.current.find((d) => d.id === deviceId);
       const willOverride = device?.status !== "override";
 
-      // Optimistic UI: toggle status, clear enforced rules when releasing.
       setDevices((prev) =>
         prev.map((d) =>
           d.id === deviceId
             ? {
                 ...d,
                 status: willOverride ? "override" : "secure",
-                firewallRules: willOverride ? undefined : d.firewallRules,
+                firewallRules: willOverride ? d.firewallRules : undefined,
               }
             : d,
         ),
@@ -361,52 +415,71 @@ export function useSimulatedStream(): CommandCenterState {
           id: lid(),
           ts: Date.now(),
           level: "warn",
-          text: `Human Override :: operator ${willOverride ? "retracting policy for" : "restoring"} ${device?.model ?? deviceId}.`,
+          dim: false,
+          text: `[HUMAN OVERRIDE] Operator ${willOverride ? "retracting policy for" : "restoring"} ${device?.model ?? deviceId}.`,
         },
       ]);
 
-      // Only the "retract" direction hits the backend. On success the backend
-      // broadcasts a [HUMAN OVERRIDE] content message over the WebSocket, which
-      // shows up in the terminal automatically.
       if (config.useMock || !willOverride) return;
 
       try {
-        const res = await fetch(endpoints.policy(device?.vpc_id ?? deviceId), {
+        const res = await fetch(endpoints.policy(deviceId), {
           method: "DELETE",
           headers: authHeaders(),
         });
         if (res.status === 404) {
-          pushLogs([
-            {
-              id: lid(),
-              ts: Date.now(),
-              level: "warn",
-              text: `Override :: backend reports no active policy for '${deviceId}'.`,
-            },
-          ]);
+          errorLog(`[HUMAN OVERRIDE WARN] Backend reports no active policy for '${deviceId}'.`);
         } else if (!res.ok) {
-          pushLogs([
-            {
-              id: lid(),
-              ts: Date.now(),
-              level: "warn",
-              text: `Override :: backend returned HTTP ${res.status}.`,
-            },
-          ]);
+          errorLog(`[HUMAN OVERRIDE ERROR] Backend returned HTTP ${res.status}.`);
         }
       } catch {
-        pushLogs([
-          {
-            id: lid(),
-            ts: Date.now(),
-            level: "warn",
-            text: "Override :: backend unreachable, applied locally only.",
-          },
-        ]);
+        errorLog("[HUMAN OVERRIDE ERROR] Backend unreachable — override applied locally only.");
       }
     },
-    [pushLogs],
+    [pushLogs, errorLog],
   );
+
+  // ---- Real audit trail (GET /api/v1/agent/audit).
+  const refreshAudit = useCallback(async () => {
+    if (config.useMock) {
+      setAuditEntries([]);
+      return;
+    }
+    setAuditLoading(true);
+    try {
+      const res = await fetch(endpoints.audit(50), { headers: authHeaders() });
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      const data = (await res.json()) as { entries: AuditEntry[] };
+      setAuditEntries(Array.isArray(data.entries) ? [...data.entries].reverse() : []);
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : "unknown error";
+      errorLog(`[ERROR] Audit log fetch failed :: ${msg}`);
+      setAuditEntries([]);
+    } finally {
+      setAuditLoading(false);
+    }
+  }, [errorLog]);
+
+  // ---- Plain-English justification for a decision (POST /api/v1/agent/explain).
+  const explainMemo = useCallback(async (memo: IncidentMemo): Promise<string> => {
+    if (config.useMock) return "Explanations require a live backend connection.";
+    const res = await fetch(endpoints.explain, {
+      method: "POST",
+      headers: authHeaders({ "Content-Type": "application/json" }),
+      body: JSON.stringify({
+        policy: {
+          target_vpc_id: memo.target_vpc_id,
+          firewall_rules: memo.firewall_rules,
+          confidence_score: memo.confidence_score,
+          cve_flagged: memo.cve_flagged ?? "NONE",
+          memo_text: memo.memo_text,
+        },
+      }),
+    });
+    if (!res.ok) throw new Error(`HTTP ${res.status} from /agent/explain`);
+    const data = (await res.json()) as { explanation?: string };
+    return data.explanation?.trim() || "No explanation returned.";
+  }, []);
 
   const stats = useMemo<DashboardStats>(() => {
     const activeRules = memos.reduce((sum, m) => sum + m.firewall_rules.length, 0);
@@ -430,11 +503,17 @@ export function useSimulatedStream(): CommandCenterState {
     memos,
     threats,
     stats,
+    auditEntries,
+    auditLoading,
     autonomous,
     running,
+    uploading,
     dataMode,
     setAutonomous,
     runAgent,
     overrideDevice,
+    uploadManual,
+    refreshAudit,
+    explainMemo,
   };
 }

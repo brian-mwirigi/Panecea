@@ -21,6 +21,15 @@ from schemas.contract_a import ContractA
 DEFAULT_BASE_URL = "https://api.vultrinference.com/v1/vector_store"
 
 
+def _vector_store_api_key() -> str:
+    """Vector store collections are scoped to the main Vultr account API key, not inference key."""
+    return os.getenv("VULTR_API_KEY", "") or os.getenv("VULTR_INFERENCE_API_KEY", "")
+
+
+def _vector_store_base_url() -> str:
+    return (os.getenv("VULTR_VECTOR_STORE_URL") or DEFAULT_BASE_URL).rstrip("/")
+
+
 class VultrVectorStoreError(RuntimeError):
     """Raised when managed Vector Store ingestion cannot be completed."""
 
@@ -89,8 +98,8 @@ class VultrVectorStore:
         timeout: float | None = None,
         client: httpx.AsyncClient | None = None,
     ) -> None:
-        self.api_key = api_key or os.getenv("VULTR_INFERENCE_API_KEY", "")
-        self.base_url = (base_url or os.getenv("VULTR_VECTOR_STORE_URL") or DEFAULT_BASE_URL).rstrip("/")
+        self.api_key = api_key or _vector_store_api_key()
+        self.base_url = (base_url or _vector_store_base_url()).rstrip("/")
         self.collection_id = collection_id or os.getenv("VULTR_VECTOR_COLLECTION_ID", "")
         self.collection_name = collection_name or os.getenv("VULTR_VECTOR_COLLECTION_NAME", "panacea-manuals")
         self.timeout = timeout or float(os.getenv("VULTR_VECTOR_TIMEOUT", "30"))
@@ -110,12 +119,19 @@ class VultrVectorStore:
             "Content-Type": "application/json",
         }
 
+    # Vultr's Vector Store intermittently returns these under concurrent load
+    # (e.g. multi-device runs ingesting/querying the same collection at once):
+    # 422 "Internal Error" on /items, and a transient "Collection not found" on
+    # /RAG while another ingest is still indexing. All are safe to retry.
+    _RETRYABLE_STATUS = frozenset({409, 422, 425, 429, 500, 502, 503, 504})
+    _MAX_ATTEMPTS = 5
+
     async def _request(self, method: str, url: str, **kwargs: Any) -> httpx.Response:
         last_error: Exception | None = None
         headers = self._headers.copy()
         if "files" in kwargs:
             headers.pop("Content-Type", None)
-        for attempt in range(3):
+        for attempt in range(self._MAX_ATTEMPTS):
             try:
                 if self._client is not None:
                     response = await self._client.request(method, url, headers=headers, **kwargs)
@@ -123,20 +139,27 @@ class VultrVectorStore:
                     async with httpx.AsyncClient(timeout=self.timeout) as client:
                         response = await client.request(method, url, headers=headers, **kwargs)
 
-                if response.status_code == 429 or response.status_code >= 500:
-                    response.raise_for_status()
                 if response.is_error:
                     detail = response.text[:500]
-                    raise VultrVectorStoreError(
-                        f"Vultr Vector Store returned HTTP {response.status_code}: {detail}"
+                    endpoint = url.rsplit("/", 2)[-2:]
+                    error = VultrVectorStoreError(
+                        f"Vultr Vector Store returned HTTP {response.status_code} "
+                        f"at .../{'/'.join(endpoint)}: {detail}"
                     )
+                    if response.status_code in self._RETRYABLE_STATUS and attempt < self._MAX_ATTEMPTS - 1:
+                        last_error = error
+                        await asyncio.sleep(0.5 * (2**attempt))
+                        continue
+                    raise error
                 return response
-            except (httpx.TimeoutException, httpx.NetworkError, httpx.HTTPStatusError) as exc:
+            except (httpx.TimeoutException, httpx.NetworkError) as exc:
                 last_error = exc
-                if attempt < 2:
-                    await asyncio.sleep(0.25 * (2**attempt))
+                if attempt < self._MAX_ATTEMPTS - 1:
+                    await asyncio.sleep(0.5 * (2**attempt))
 
-        raise VultrVectorStoreError(f"Vultr Vector Store request failed after 3 attempts: {last_error}")
+        raise VultrVectorStoreError(
+            f"Vultr Vector Store request failed after {self._MAX_ATTEMPTS} attempts: {last_error}"
+        )
 
     async def ensure_collection(self) -> str:
         """Return the configured collection, creating it by name when necessary.
@@ -193,10 +216,13 @@ class VultrVectorStore:
         return None
 
     async def add_item(self, collection_id: str, content: str, description: str) -> str:
+        # auto_chunk lets Vultr split content that exceeds the embedder's max
+        # sequence length into ~300-token pieces automatically, avoiding HTTP 422.
+        # When it chunks, the response returns multiple item IDs — we return the first.
         response = await self._request(
             "POST",
             f"{self.base_url}/{collection_id}/items",
-            json={"content": content, "description": description},
+            json={"content": content, "description": description[:500], "auto_chunk": True},
         )
         return _response_id(response.json())
 
@@ -241,9 +267,11 @@ class VultrVectorStore:
         item_ids: list[str] = []
 
         for index, chunk in enumerate(chunks, start=1):
+            # Keep per-chunk content minimal — device+firmware header only.
+            # Full CONTRACT_A is already stored in the source record above.
             content = (
-                f"CONTRACT_A\n{contract_json}\n\n"
-                f"MANUAL_CHUNK {index}/{len(chunks)}\n{chunk}"
+                f"Device: {stored_contract.device_model} | Firmware: {stored_contract.firmware_version} | "
+                f"Source: {source_doc_id}\n\n{chunk}"
             )
             description = (
                 f"{stored_contract.device_model} {stored_contract.firmware_version}; "
@@ -358,11 +386,19 @@ def _records(payload: Any, *keys: str) -> list[dict[str, Any]]:
 
 
 def _response_id(payload: Any) -> str:
+    # auto_chunk responses return a list of items — take the first ID.
+    if isinstance(payload, list):
+        for entry in payload:
+            try:
+                return _response_id(entry)
+            except VultrVectorStoreError:
+                continue
+        raise VultrVectorStoreError("Vultr Vector Store response list contained no resource ID")
     if isinstance(payload, dict):
         value = payload.get("id") or payload.get("file_id") or payload.get("item_id")
         if value is not None:
             return str(value)
-        for key in ("data", "collection", "vector_store", "item", "file"):
+        for key in ("data", "items", "collection", "vector_store", "item", "file"):
             if key in payload:
                 try:
                     return _response_id(payload[key])
