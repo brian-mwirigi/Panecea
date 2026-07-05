@@ -38,21 +38,6 @@ from services.vultr_vector import (
     retrieve_document,
 )
 
-# Used when Nemotron's extraction fails or comes back with no ports — the
-# demo must always produce a result even if the LLM hiccups once. Callers
-# still get told this happened via the [STEP 2 WARN] emit, unlike main's
-# silent version of this fallback.
-DEMO_CONTRACT_A = ContractA(
-    device_model="Philips_IntelliVue",
-    firmware_version="B.01",
-    allowed_ports=[
-        AllowedPort(port=24105, protocol="UDP", reason="Data Export Protocol — main data channel (p.29)"),
-        AllowedPort(port=24005, protocol="UDP", reason="Device discovery / Connect Indication broadcast (p.53)"),
-    ],
-    source_doc_id="",
-)
-
-
 # Demo manual — sourced from the real Philips IntelliVue Data Export Interface
 # Programming Guide (part 4535 645 88011, release L.0, 08/2015, 339 pp).
 # UDP 24105 is from Section 4, p.29. UDP 24005 is from Section 5, p.53.
@@ -173,13 +158,20 @@ async def run_pipeline(
             "\n[STEP 1] Demo scenario selected — using verified Philips IntelliVue "
             "excerpt (deterministic).\n"
         )
+    elif not raw_pdf_text.strip():
+        await _emit("\n[STEP 1] No manual text supplied — using demo Philips IntelliVue excerpt.\n")
 
     # ------------------------------------------------------------------
     # Step 2: Extract device info from the PDF text
     # ------------------------------------------------------------------
     await _emit("\n[STEP 2] Extracting network requirements from device manual...\n")
-    extraction_raw = await complete(extraction_prompt(raw_pdf_text))
-    contract_a, extraction_fell_back = _parse_contract_a(extraction_raw)
+    if demo_contract is not None:
+        # Deterministic demo path — skip the LLM extraction lottery so the on-stage
+        # demo is reproducible and drift only reflects a real document change.
+        contract_a, extraction_fell_back = demo_contract, False
+    else:
+        extraction_raw = await complete(extraction_prompt(manual_text))
+        contract_a, extraction_fell_back = _parse_contract_a(extraction_raw)
     if source_doc_id:
         contract_a = contract_a.model_copy(update={"source_doc_id": source_doc_id})
     if extraction_fell_back:
@@ -196,7 +188,7 @@ async def run_pipeline(
     # ------------------------------------------------------------------
     await _emit("\n[STEP 5] Chunking manual and storing Contract A in Vultr Vector Store...\n")
     try:
-        ingestion = await ingest_manual(raw_pdf_text, contract_a)
+        ingestion = await ingest_manual(manual_text, contract_a)
         contract_a = contract_a.model_copy(update={"source_doc_id": ingestion.source_doc_id})
         await publish_event("contract-a.extracted", ingestion.source_doc_id, contract_a.model_dump(mode="json"))
         await _emit(
