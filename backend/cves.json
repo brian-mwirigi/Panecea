@@ -58,5 +58,21 @@
     "mitigation": "Deny inbound/outbound port 22 at the network layer rather than relying on client-side filename sanitization.",
     "source": "NVD CVE-2020-15778 (status: disputed by vendor)",
     "synthetic_demo": false
+  },
+  {
+    "cve_id": "CVE-2018-10597",
+    "device_model": "Philips_IntelliVue",
+    "firmware_version": "B.01",
+    "affected_versions": "IntelliVue MP Series (MP2/X2/MP30/MP50/MP70/NP90/MX700/MX800) Rev B-M, includes B.01; MX400-550 Rev J-M; X3/MX100 Rev M",
+    "port": null,
+    "protocol": null,
+    "cwe": "CWE-787 Out-of-bounds Write",
+    "severity": "HIGH",
+    "cvss_v3_score": 8.3,
+    "cvss_v3_vector": "CVSS:3.1/AV:A/AC:H/PR:N/UI:N/S:C/C:H/I:H/A:H",
+    "description": "Unauthenticated same-subnet attacker can write-what-where at a chosen device address, enabling memory read/write and a DoS system restart. Lateral-movement risk from any compromised host on the shared clinical VLAN.",
+    "mitigation": "Micro-segment the monitor so no untrusted host shares its subnet; allow only documented ports 24105/UDP and 24005/UDP, deny all other adjacent reachability. Network-layer control, no device patch required.",
+    "source": "CISA ICSMA-18-156-01 / NVD CVE-2018-10597",
+    "synthetic_demo": false
   }
 ]

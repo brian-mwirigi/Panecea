@@ -15,7 +15,7 @@ if str(BACKEND_ROOT) not in sys.path:
 
 from agent.prompts import TOOLS, agentic_policy_prompt, extraction_prompt, incident_memo_prompt
 from agent.tools.firewall import apply_firewall_rule, get_enforcement_result, retract_firewall_rule
-from schemas.contract_a import ContractA
+from schemas.contract_a import AllowedPort, ContractA
 from schemas.contract_b import ContractB, FirewallRule
 from schemas.control_plane import EvidenceBundle, EnforcementReceipt, PolicyLease
 from services.vultr_events import publish_event
@@ -31,6 +31,20 @@ from services.vultr_vector import (
     query_cve,
     query_manual,
     retrieve_document,
+)
+
+# Used when Nemotron's extraction fails or comes back with no ports — the
+# demo must always produce a result even if the LLM hiccups once. Callers
+# still get told this happened via the [STEP 2 WARN] emit, unlike main's
+# silent version of this fallback.
+DEMO_CONTRACT_A = ContractA(
+    device_model="Philips_IntelliVue",
+    firmware_version="B.01",
+    allowed_ports=[
+        AllowedPort(port=24105, protocol="UDP", reason="Data Export Protocol — main data channel (p.29)"),
+        AllowedPort(port=24005, protocol="UDP", reason="Device discovery / Connect Indication broadcast (p.53)"),
+    ],
+    source_doc_id="",
 )
 
 
@@ -77,9 +91,9 @@ async def run_pipeline(
         contract_a = contract_a.model_copy(update={"source_doc_id": source_doc_id})
     if extraction_fell_back:
         await _emit(
-            f"[STEP 2 WARN] Nemotron did not return valid extraction JSON — using placeholder "
-            f"device data ({contract_a.device_model}); treat this run's policy as unverified "
-            f"until the manual is re-processed.\n"
+            f"[STEP 2 WARN] Nemotron did not return valid extraction JSON (or returned no ports) — "
+            f"substituting the demo device ({contract_a.device_model}); treat this run's policy as "
+            f"unverified until the manual is re-processed.\n"
         )
     else:
         await _emit(f"[STEP 2 DONE] Device: {contract_a.device_model} | Firmware: {contract_a.firmware_version} | Ports: {[p.port for p in contract_a.allowed_ports]}\n")
@@ -300,24 +314,22 @@ def _deterministic_policy(contract_a: ContractA, vpc_id: str) -> ContractB:
 def _parse_contract_a(raw: str) -> tuple[ContractA, bool]:
     """Parses the LLM's JSON output into a ContractA model.
 
-    Returns (contract, fell_back) — fell_back is True when the raw output could
-    not be parsed and a placeholder device was substituted, so callers can
-    surface that instead of silently reporting placeholder data as real.
+    Falls back to DEMO_CONTRACT_A (not an empty placeholder) whenever the
+    output doesn't parse or parses with no usable ports, so a single Nemotron
+    hiccup never breaks the rest of the pipeline mid-demo. Returns
+    (contract, fell_back) — fell_back is True whenever DEMO_CONTRACT_A was
+    substituted, so callers can surface that instead of silently reporting
+    placeholder data as a real extraction.
     """
     try:
         cleaned = raw.strip().strip("```json").strip("```").strip()
         data = json.loads(cleaned)
-        return ContractA(**data), False
+        contract = ContractA(**data)
+        if contract.allowed_ports:
+            return contract, False
     except Exception:
-        return (
-            ContractA(
-                device_model="Unknown_Device",
-                firmware_version="unknown",
-                allowed_ports=[],
-                source_doc_id="",
-            ),
-            True,
-        )
+        pass
+    return DEMO_CONTRACT_A.model_copy(), True
 
 
 def _extract_contract_b(final_message: dict, vpc_id: str) -> ContractB:
