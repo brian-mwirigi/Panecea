@@ -33,7 +33,7 @@ export function ManualUpload({ uploading, onUpload }: ManualUploadProps) {
     <GlassCard delay={0.1} className="overflow-hidden">
       <PanelHeader
         title="Ingest Device Manual"
-        subtitle="pdf · /manuals/run"
+        subtitle="pdf · in-browser extract → agent"
         icon={<UploadCloud className="h-4 w-4" />}
       />
       <div className="p-5">
