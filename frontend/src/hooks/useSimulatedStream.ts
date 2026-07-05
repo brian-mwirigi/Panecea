@@ -2,7 +2,7 @@
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { config, endpoints, SAMPLE_MANUAL_TEXT } from "@/lib/config";
-import { extractPdfText } from "@/lib/pdf";
+import { curateManualText, extractPdfText } from "@/lib/pdf";
 import { tickDevice } from "@/lib/simulator";
 import type {
   AgentLogLine,
@@ -312,19 +312,26 @@ export function useSimulatedStream(): CommandCenterState {
         }
 
         if (text.length >= 200) {
+          // Never ship the whole manual — a huge payload overruns the model
+          // context and times out the backend (502). Send a curated slice.
+          const payload = curateManualText(text);
+          const curatedNote =
+            payload.length < text.length
+              ? ` (sending ${payload.length.toLocaleString()} relevant chars)`
+              : "";
           pushLogs([
             {
               id: lid(),
               ts: Date.now(),
               level: "system",
               dim: false,
-              text: `[INGEST] Extracted ${text.length.toLocaleString()} chars from "${file.name}" → analyzing ${vpc}`,
+              text: `[INGEST] Extracted ${text.length.toLocaleString()} chars from "${file.name}"${curatedNote} → analyzing ${vpc}`,
             },
           ]);
           const res = await fetch(endpoints.agentRun, {
             method: "POST",
             headers: authHeaders({ "Content-Type": "application/json" }),
-            body: JSON.stringify({ raw_pdf_text: text, vpc_id: vpc }),
+            body: JSON.stringify({ raw_pdf_text: payload, vpc_id: vpc }),
           });
           if (!res.ok) throw new Error(`HTTP ${res.status} from /agent/run`);
           finalize((await res.json()) as ContractB);
