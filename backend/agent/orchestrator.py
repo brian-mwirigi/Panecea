@@ -9,8 +9,9 @@ from datetime import datetime
 from pathlib import Path
 from typing import Awaitable, Callable
 
-# Module-level policy history for drift detection (device_model → last ContractB).
-_policy_history: dict[str, "ContractB"] = {}
+# Module-level scan history for drift detection (device_model → last Contract A).
+# Keyed on the manufacturer-required ports so drift reflects real document change.
+_policy_history: dict[str, "ContractA"] = {}
 
 BACKEND_ROOT = Path(__file__).resolve().parent.parent
 if str(BACKEND_ROOT) not in sys.path:
@@ -41,7 +42,7 @@ from services.vultr_vector import (
 # Using these real numbers so the fallback path produces citable output.
 DEMO_MANUAL_TEXT = (
     "Philips IntelliVue Patient Monitor — Data Export Interface Programming Guide "
-    "(X2, MP, MX, FM Series, Release L.0, Firmware B.01). "
+    "(X2, MP, MX, FM Series, Release L.0, Firmware L.0). "
     "Section 4 — Transport Protocols for the LAN Interface (p. 29): "
     "'The current Protocol version uses the fixed UDP port 24105. "
     "All messages sent from the Computer Client to the monitor must use this port number "
@@ -54,13 +55,63 @@ DEMO_MANUAL_TEXT = (
 
 DEMO_CONTRACT_A = ContractA(
     device_model="Philips_IntelliVue",
-    firmware_version="B.01",
+    firmware_version="L.0",
     allowed_ports=[
         AllowedPort(port=24105, protocol="UDP", reason="Data Export Protocol — main data channel (p.29)"),
         AllowedPort(port=24005, protocol="UDP", reason="Device discovery / Connect Indication broadcast (p.53)"),
     ],
     source_doc_id="",
 )
+
+# Second demo scenario: a vendor manual revision (Release M.0) that changes the
+# device's network requirements — a new secure-telemetry port is introduced and
+# the legacy discovery port is deprecated. Re-scanning the same device with this
+# revision deterministically triggers policy-drift detection, so the demo can
+# show "the document changed, so the agent's decision changed" on command.
+DEMO_MANUAL_TEXT_V2 = (
+    "Philips IntelliVue Patient Monitor — Data Export Interface Programming Guide "
+    "(X2, MP, MX, FM Series, Release M.0, Firmware M.0). "
+    "Section 4 — Transport Protocols for the LAN Interface (p. 29): "
+    "'The current Protocol version uses the fixed UDP port 24105. "
+    "All messages sent from the Computer Client to the monitor must use this port number "
+    "as the destination port number.' "
+    "Section 4a — Secure Telemetry (NEW in Release M.0, p. 31): "
+    "UDP port 24007 is now required for the encrypted vitals streaming channel. "
+    "Section 5 — Connect Indication Event (p. 53): "
+    "the legacy UDP port 24005 discovery broadcast is DEPRECATED in Release M.0 and must be closed. "
+    "All remote administration (SSH, port 22) must remain disabled in clinical "
+    "deployments to prevent lateral movement across the hospital network."
+)
+
+DEMO_CONTRACT_A_V2 = ContractA(
+    device_model="Philips_IntelliVue",
+    firmware_version="M.0",
+    allowed_ports=[
+        AllowedPort(port=24105, protocol="UDP", reason="Data Export Protocol — main data channel (p.29)"),
+        AllowedPort(port=24007, protocol="UDP", reason="Secure telemetry channel — NEW in Release M.0 (p.31)"),
+    ],
+    source_doc_id="",
+)
+
+# Sentinel inputs that select a deterministic demo scenario instead of running the
+# LLM extraction lottery. Empty input keeps the original zero-config demo behavior.
+_DEMO_BASE_SENTINELS = {"", "demo", "demo1", "scan1"}
+_DEMO_DRIFT_SENTINELS = {"drift", "demo2", "scan2", "update", "revision"}
+
+
+def _demo_scenario(raw_pdf_text: str) -> tuple[str, ContractA] | None:
+    """Map a sentinel input to a deterministic (manual_text, ContractA) demo pair.
+
+    Returns None for real manual text, in which case the normal LLM extraction
+    path runs. Deterministic demo pairs keep the on-stage demo reproducible and
+    let policy-drift be triggered on command via a second 'vendor revision' scan.
+    """
+    key = raw_pdf_text.strip().lower()
+    if key in _DEMO_BASE_SENTINELS:
+        return DEMO_MANUAL_TEXT, DEMO_CONTRACT_A.model_copy()
+    if key in _DEMO_DRIFT_SENTINELS:
+        return DEMO_MANUAL_TEXT_V2, DEMO_CONTRACT_A_V2.model_copy()
+    return None
 
 
 async def run_pipeline(
@@ -96,16 +147,27 @@ async def run_pipeline(
         if on_token:
             await on_token(StreamToken(text=text, type=token_type))
 
+    demo = _demo_scenario(raw_pdf_text)
     manual_text = raw_pdf_text.strip() or DEMO_MANUAL_TEXT
-    if not raw_pdf_text.strip():
-        await _emit("\n[STEP 1] No manual text supplied — using demo Philips IntelliVue excerpt.\n")
+    demo_contract: ContractA | None = None
+    if demo is not None:
+        manual_text, demo_contract = demo
+        await _emit(
+            "\n[STEP 1] Demo scenario selected — using verified Philips IntelliVue "
+            "excerpt (deterministic).\n"
+        )
 
     # ------------------------------------------------------------------
     # Step 2: Extract device info from the PDF text
     # ------------------------------------------------------------------
     await _emit("\n[STEP 2] Extracting network requirements from device manual...\n")
-    extraction_raw = await complete(extraction_prompt(manual_text))
-    contract_a = _parse_contract_a(extraction_raw)
+    if demo_contract is not None:
+        # Deterministic demo path — skip the LLM extraction lottery so the on-stage
+        # demo is reproducible and drift only reflects a real document change.
+        contract_a = demo_contract
+    else:
+        extraction_raw = await complete(extraction_prompt(manual_text))
+        contract_a = _parse_contract_a(extraction_raw)
     if source_doc_id:
         contract_a = contract_a.model_copy(update={"source_doc_id": source_doc_id})
     await _emit(f"[STEP 2 DONE] Device: {contract_a.device_model} | Firmware: {contract_a.firmware_version} | Ports: {[p.port for p in contract_a.allowed_ports]}\n")
@@ -205,20 +267,22 @@ async def run_pipeline(
     # ------------------------------------------------------------------
     # Feature 3: Policy drift detection — flag if this device was seen before.
     # ------------------------------------------------------------------
-    drift_alert = _detect_drift(contract_a.device_model, contract_b)
+    drift_alert = _detect_drift(contract_a.device_model, contract_a)
     if drift_alert:
-        alert_msg = f"\n[DRIFT ALERT] Policy changed since last scan: {drift_alert}\n"
-        await _emit(alert_msg, "reasoning")
-        contract_b = contract_b.model_copy(
-            update={"memo_text": contract_b.memo_text + f"\n\n⚠️ DRIFT ALERT: {drift_alert}"}
+        await _emit(
+            f"\n[DRIFT ALERT] Manufacturer requirements changed since last scan: {drift_alert}\n",
+            "reasoning",
         )
-    _policy_history[contract_a.device_model] = contract_b
+    _policy_history[contract_a.device_model] = contract_a
 
     # ------------------------------------------------------------------
     # Step 7: Expand the incident memo for Oleh's frontend
     # ------------------------------------------------------------------
     await _emit("\n[STEP 7] Generating incident memo with citation trail...\n")
     contract_b.memo_text = _build_memo(contract_b, contract_a, tool_evidence, confidence_explanation)
+    if drift_alert:
+        # Appended after _build_memo so the drift finding survives into the memo.
+        contract_b.memo_text += f"\n\nDRIFT ALERT: {drift_alert}"
     await _emit("\n[STEP 7 DONE] Memo ready.\n", "content")
 
     enforcement = get_enforcement_result(vpc_id) or {}
@@ -427,17 +491,20 @@ def _confidence_explanation(
     return f"{depth}{cve_note}{grounding_note}"
 
 
-def _detect_drift(device_model: str, new_policy: "ContractB") -> str | None:
+def _detect_drift(device_model: str, contract_a: "ContractA") -> str | None:
     """
-    Compares the new policy against the last stored policy for this device.
-    Returns a human-readable drift summary if the port set changed, else None.
+    Compares this scan's manufacturer-required ports against the last scan for
+    the same device. Drift is grounded in the document's stated requirements
+    (Contract A), not the LLM's generated firewall rules — so it reflects a real
+    change in the manual and never false-fires on run-to-run model variance.
+    Returns a human-readable drift summary if the required port set changed.
     """
     prev = _policy_history.get(device_model)
     if not prev:
         return None
 
-    prev_ports = {(r.port, r.action) for r in prev.firewall_rules}
-    new_ports = {(r.port, r.action) for r in new_policy.firewall_rules}
+    prev_ports = {(p.port, p.protocol) for p in prev.allowed_ports}
+    new_ports = {(p.port, p.protocol) for p in contract_a.allowed_ports}
 
     added = new_ports - prev_ports
     removed = prev_ports - new_ports
@@ -447,11 +514,11 @@ def _detect_drift(device_model: str, new_policy: "ContractB") -> str | None:
 
     parts = []
     if added:
-        ports_str = ", ".join(f"port {p} ({a})" for p, a in sorted(added))
-        parts.append(f"NEW rules added: {ports_str}")
+        ports_str = ", ".join(f"{proto} {port}" for port, proto in sorted(added))
+        parts.append(f"NEW required ports: {ports_str}")
     if removed:
-        ports_str = ", ".join(f"port {p} ({a})" for p, a in sorted(removed))
-        parts.append(f"REMOVED rules: {ports_str}")
+        ports_str = ", ".join(f"{proto} {port}" for port, proto in sorted(removed))
+        parts.append(f"DEPRECATED / removed ports: {ports_str}")
 
     return "; ".join(parts)
 
