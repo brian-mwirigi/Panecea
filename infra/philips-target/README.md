@@ -143,3 +143,48 @@ showtime if there's a spare minute.
 
 - SSH key pair for admin access is `panacea-target-key` (registered on the Vultr account, ID `e766aa16-af8a-4436-9aaf-2892ea5bac9c`), keypair not stored in this repo (local copy at `~/.ssh/panacea_target` on Mohamed's machine).
 - Firewall group ID, instance IDs, and VPC ID are tracked outside this repo (Vultr Console) since they're account-specific, not portable config; this README mirrors them for team visibility only.
+
+### If this VM needs to be recreated from scratch
+
+This has happened once already (the original Paris instance was destroyed and
+replaced with this Chicago one, reusing the same VPC/firewall-group pattern —
+see "Decommissioned — Paris instance" above). Steps, assuming the VPC
+(`panacea-medical-vpc`) and firewall group (`panacea-medical-lockdown`)
+already exist and you just need a new instance attached to them (requires
+`vultr-cli`, configured with an API key that has this Vultr account's access —
+see `infra/zain/.env`, gitignored):
+
+```bash
+# 1. Create the instance (Ubuntu 24.04 LTS x64 = os id 2284, confirmed via
+#    `vultr-cli os list`; adjust --label/--region if deploying elsewhere)
+vultr-cli instance create \
+  --region="ord" \
+  --plan="vc2-1c-1gb" \
+  --os=2284 \
+  --label="panacea-philips-target-chicago" \
+  --vpc-ids="71c87a0e-97fd-4e31-9f65-85d520f428a4" \
+  --ssh-keys="e766aa16-af8a-4436-9aaf-2892ea5bac9c" \
+  --firewall-group="de7a05fc-ecdf-4645-92d2-989b02951598"
+
+# 2. Once it's up, note its new public IP (vultr-cli instance list), then
+#    deploy the listener the same way as a normal redeploy (see above):
+scp -i ~/.ssh/panacea_target infra/philips-target/hl7_listener.py \
+    root@<NEW_PUBLIC_IP>:/root/hl7_listener.py
+scp -i ~/.ssh/panacea_target infra/philips-target/hl7-listener.service \
+    root@<NEW_PUBLIC_IP>:/etc/systemd/system/hl7-listener.service
+ssh -i ~/.ssh/panacea_target root@<NEW_PUBLIC_IP> \
+    "systemctl daemon-reload && systemctl enable --now hl7-listener.service && \
+     ufw allow 22/tcp && ufw allow 3200/tcp && ufw --force enable && \
+     systemctl status hl7-listener.service --no-pager"
+```
+
+If the firewall group itself also needs recreating from zero (not just the
+VM), that's a separate, rarer case — use `vultr-cli firewall group create`
+plus `vultr-cli firewall rule create` for each rule described in "Current
+state" above (admin CIDR on 22, attacker CIDR on 3200). See
+`infra/zain/RUNBOOK_ZAIN.md` §6 ("Safety constraints") for what those rules
+must guarantee — don't duplicate that reasoning here, just point to it.
+
+**Update this README afterward** with the new instance ID / public IP —
+everything above (`Current state` table, "For Zain" note) currently points
+at the live Chicago instance and will go stale the moment it's replaced.
