@@ -82,6 +82,37 @@ class VultrVectorStoreTests(unittest.TestCase):
         self.assertNotIn("chroma", first_chunk_body["content"].lower())
         self.assertNotIn("qdrant", first_chunk_body["content"].lower())
 
+    def test_ensure_collection_resolves_after_concurrent_duplicate_conflict(self) -> None:
+        """Two concurrent device pipelines racing to create the same-named
+        collection: the loser gets Vultr's 422 "duplicate" error instead of
+        the winner's ID. ensure_collection() must re-resolve by name instead
+        of surfacing that as a hard failure."""
+        get_call_count = 0
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            nonlocal get_call_count
+            if request.method == "GET":
+                get_call_count += 1
+                if get_call_count == 1:
+                    return httpx.Response(200, json={"data": []})
+                return httpx.Response(
+                    200, json={"data": [{"id": "winner-123", "name": "panacea-manuals"}]}
+                )
+            if request.method == "POST":
+                return httpx.Response(
+                    422, json={"message": "Duplicate collection name found, please provide a unique name"}
+                )
+            return httpx.Response(204)
+
+        async def run_test():
+            transport = httpx.MockTransport(handler)
+            async with httpx.AsyncClient(transport=transport) as client:
+                store = VultrVectorStore(api_key="test-key", collection_name="panacea-manuals", client=client)
+                return await store.ensure_collection()
+
+        collection_id = asyncio.run(run_test())
+        self.assertEqual(collection_id, "winner-123")
+
 
 if __name__ == "__main__":
     unittest.main()
