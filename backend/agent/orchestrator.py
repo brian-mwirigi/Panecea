@@ -553,6 +553,26 @@ def _confidence_explanation(
     return f"{depth}{cve_note}{grounding_note}"
 
 
+def _cve_description_lookup(cve_id: str) -> str:
+    """Return the curated one-line description for a CVE from backend/cves.json.
+
+    The memo needs a clean human-readable THREAT line; extracting it from RAG
+    output proved unreliable (markdown/JSON fragments leaked in). The local
+    dataset contains the exact records Goutham ingested into the collection.
+    """
+    try:
+        cves_path = BACKEND_ROOT / "cves.json"
+        for record in json.loads(cves_path.read_text()):
+            if record.get("cve_id") == cve_id:
+                desc = (record.get("description") or "").strip().rstrip(".")
+                severity = record.get("severity", "")
+                if desc:
+                    return f"{severity} severity — {desc}" if severity else desc
+    except Exception:
+        pass
+    return ""
+
+
 def _cve_id_from_evidence(cve_text: str) -> str:
     """Extract the first real CVE id from the check_cve tool output, if any.
 
@@ -651,28 +671,10 @@ def _build_memo(
     cve = contract_b.cve_flagged
     has_cve = cve and cve not in ("NONE", "")
 
-    # Build a short human-readable CVE description for THREAT.
-    # RAG returns markdown/table prose, not raw JSON, so scan the CVE text for
-    # a sentence near the CVE id that reads like a real description.
-    cve_description = ""
-    if has_cve and tool_evidence.get("cve"):
-        raw = tool_evidence["cve"]
-        # Try JSON description field first (ingest_cve script stores full records).
-        desc_match = re.search(r'"description"\s*:\s*"([^"]{20,300})"', raw)
-        if desc_match:
-            cve_description = desc_match.group(1).rstrip(".")
-        else:
-            # RAG returns markdown prose — look for a sentence after the CVE id.
-            cve_pos = raw.find(cve)
-            if cve_pos != -1:
-                window = raw[cve_pos: cve_pos + 400].replace("\n", " ")
-                for sep in ("):", "): ", " — ", ": "):
-                    idx = window.find(sep)
-                    if idx != -1 and idx < 100:
-                        candidate = window[idx + len(sep):].split(".")[0].strip()
-                        if len(candidate) > 30:
-                            cve_description = candidate
-                            break
+    # Look up the CVE description from the local curated dataset (the same
+    # records ingested into the Vultr collection). Deterministic and clean —
+    # parsing the RAG output leaked JSON fragments into the memo.
+    cve_description = _cve_description_lookup(cve) if has_cve else ""
     threat = (
         (
             f"CVE {cve} detected on {contract_a.device_model} firmware {contract_a.firmware_version} "
