@@ -42,7 +42,7 @@ two are the same port.
 | VPC internal IP | `10.100.0.3` |
 | Firewall group | `panacea-medical-lockdown` (`de7a05fc-ecdf-4645-92d2-989b02951598`) — history below |
 | Port 3200 (HL7) | Open to everyone (`0.0.0.0/0`) at the cloud firewall; listener + OS-level `ufw` rule confirmed — details below |
-| Port 22 (SSH) | Locked down — cloud firewall allows only admin CIDR `102.159.195.84/32`; attacker VM denied — details below |
+| Port 22 (SSH) | Locked down — cloud firewall allows only the admin CIDR (`MANAGEMENT_SSH_SOURCE_CIDR` in `infra/zain/.env`, gitignored); attacker VM denied — details below |
 
 ### Firewall group history
 
@@ -69,7 +69,7 @@ target VM, so 3200 is now reachable end-to-end (cloud firewall + OS firewall).
 ### Port 22 (SSH) lockdown state
 
 **Current (lockdown) state:** the Vultr cloud firewall allows port 22 only
-from the admin CIDR `102.159.195.84/32`. The rule that previously let Zain's
+from the admin CIDR (`MANAGEMENT_SSH_SOURCE_CIDR`, not committed anywhere in this repo). The rule that previously let Zain's
 attacker VM (`64.177.113.13/32`) through port 22 has been removed/denied as
 part of the live "lockdown" firewall test (`infra/zain/contract_b_lockdown.json`
 shows `{"port": 22, "action": "DENY"}` for the attacker's rule).
