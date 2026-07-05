@@ -20,13 +20,12 @@ device would be. It's what the rest of the pipeline actually acts on:
    attacker VM can reach the intentionally-open demo port but is blocked on
    SSH — see "Port 22 (SSH) lockdown state" below.
 
-**Known simplification (READ THIS):** this VM's actual simulated service is a
+**Known simplification (READ THIS):** this VM's simulated service is a
 placeholder TCP responder on port 3200/"HL7" (`hl7_listener.py`), not the
-corrected real UDP 24105/24005 protocol used everywhere else in the docs post
-manual-sourcing-correction. The demo's firewall lockdown logic and live
-attack/defense flow are validated against 3200, not 24105 — this VM was never
-redeployed to match the corrected port data. Not a bug, just don't assume the
-two are the same port.
+real UDP 24105/24005 protocol referenced elsewhere in the docs. The demo's
+firewall lockdown logic and live attack/defense flow are validated against
+port 3200, not 24105. Not a bug — just don't assume the two ports are the
+same.
 
 ## Current state — ACTIVE TARGET (Chicago)
 
@@ -40,39 +39,34 @@ two are the same port.
 | Public IP | `64.177.118.214` |
 | VPC | `panacea-medical-vpc` (`71c87a0e-97fd-4e31-9f65-85d520f428a4`), subnet `10.100.0.0/24`, region `ord` — matches the `target_vpc_id` field referenced in Contract B (e.g. `"vpc-medical-01"`) |
 | VPC internal IP | `10.100.0.3` |
-| Firewall group | `panacea-medical-lockdown` (`de7a05fc-ecdf-4645-92d2-989b02951598`) — history below |
-| Port 3200 (HL7) | Open to everyone (`0.0.0.0/0`) at the cloud firewall; listener + OS-level `ufw` rule confirmed — details below |
+| Firewall group | `panacea-medical-lockdown` (`de7a05fc-ecdf-4645-92d2-989b02951598`) — details below |
+| Port 3200 (HL7) | Open to everyone (`0.0.0.0/0`) at the cloud firewall and at the OS-level `ufw` firewall — details below |
 | Port 22 (SSH) | Locked down — cloud firewall allows only the admin CIDR (`MANAGEMENT_SSH_SOURCE_CIDR` in `infra/zain/.env`, gitignored); attacker VM denied — details below |
 
-### Firewall group history
+### Firewall group
 
-`panacea-medical-lockdown` replaces the earlier `panacea-target-fw` group
-(`b57ae685-a98b-44e2-a867-60270e9647de`), which was reused from the Paris
-instance. The new group is what's actually attached to the Chicago target
-instance now (confirmed via `infra/zain/.env`, `VULTR_FIREWALL_GROUP_ID`), put
-in place for the live "lockdown" firewall test.
+`panacea-medical-lockdown` (`de7a05fc-ecdf-4645-92d2-989b02951598`) is the
+firewall group attached to the Chicago target instance
+(`infra/zain/.env`, `VULTR_FIREWALL_GROUP_ID`). Note: an older group
+`panacea-target-fw` (`b57ae685-a98b-44e2-a867-60270e9647de`) also exists on
+this account but is not attached here — ignore it if you see it in the Vultr
+console.
 
 ### Port 3200 (HL7 listener) details
 
 A real Python TCP listener (`hl7_listener.py`) is running as a systemd
-service, responding with a placeholder HL7-style ACK. Verified working via
-localhost on the box itself.
+service, responding with a placeholder HL7-style ACK.
 
-The box's own OS-level `ufw` firewall (Ubuntu default) previously only
-allowed port 22 inbound and lacked an explicit allow rule for 3200, which
-could have blocked external connections to 3200 despite the Vultr cloud
-firewall being open — this gap also existed on the old Paris VM.
-
-**Resolved:** `ufw allow 3200/tcp` has since been applied on the Chicago
-target VM, so 3200 is now reachable end-to-end (cloud firewall + OS firewall).
+Port 3200 is open end-to-end: at the Vultr cloud firewall (`0.0.0.0/0`) and
+at the box's own OS-level `ufw` firewall (`ufw allow 3200/tcp`).
 
 ### Port 22 (SSH) lockdown state
 
-**Current (lockdown) state:** the Vultr cloud firewall allows port 22 only
-from the admin CIDR (`MANAGEMENT_SSH_SOURCE_CIDR`, not committed anywhere in this repo). The rule that previously let Zain's
-attacker VM (`64.177.113.13/32`) through port 22 has been removed/denied as
-part of the live "lockdown" firewall test (`infra/zain/contract_b_lockdown.json`
-shows `{"port": 22, "action": "DENY"}` for the attacker's rule).
+The Vultr cloud firewall allows port 22 only from the admin CIDR
+(`MANAGEMENT_SSH_SOURCE_CIDR`, not committed anywhere in this repo). Zain's
+attacker VM (`64.177.113.13/32`) is explicitly denied on port 22
+(`infra/zain/contract_b_lockdown.json` shows `{"port": 22, "action": "DENY"}`
+for the attacker's rule).
 
 This is the intended demo behavior for `panacea-medical-lockdown`: the
 attacker VM times out on port 22 (no SSH access) while still being able to
@@ -86,7 +80,7 @@ The original target VM in Paris (`3a71efd5-fb92-4334-83e9-3653c0386296`, `45.32.
 
 Not Mohamed's action items — noted here for reference.
 
-- **Zain** (attacker VM / Python firewall execution scripts owner): attacker VM is live at `64.177.113.13` (root SSH access). Following the live lockdown test, this IP is now explicitly denied on port 22 by `panacea-medical-lockdown` — it can still reach port 3200, but no longer has SSH access to the target.
+- **Zain** (attacker VM / Python firewall execution scripts owner): attacker VM is live at `64.177.113.13` (root SSH access). This IP is explicitly denied on port 22 by `panacea-medical-lockdown` — it can reach port 3200, but has no SSH access to the target.
 - **Brian** (backend/orchestrator, presumably FastAPI): service reported running at `45.76.26.39`. Not attached to the VPC and no action taken here — flagging in case private networking between backend and target VPC becomes relevant later.
 
 ## Files in this directory
@@ -122,22 +116,18 @@ nc -zv 64.177.118.214 3200   # should connect
 nc -zv 64.177.118.214 22     # should time out unless you're on the admin CIDR
 ```
 
-**As of this writing, the disconnect-handling hardening (PR #29, commit
-`978f3b2`) is merged into `main` but not yet redeployed to this VM** — the box
-is still running the pre-fix version. This doesn't block the demo (the
-pre-fix version was empirically verified to handle the real attacker-probe
-pattern without crashing — see PR #29's description), but redeploy before
-showtime if there's a spare minute.
+**TODO before demo:** redeploy `hl7_listener.py` (steps above) — the box is
+currently running an older version without the disconnect-handling fix.
 
 ## For Zain (attacker VM owner)
 
-> Target IP: `64.177.118.214` (Chicago — this is now the real target, NOT the
-> old `45.32.146.113` Paris IP). Following the live lockdown test, port 22 from
-> your attacker VM's IP (`64.177.113.13/32`) is now explicitly denied at the
-> Vultr cloud firewall (`panacea-medical-lockdown`) — a connection timeout on
-> 22 is the correct, intended result of the demo, not a bug. Port 3200 remains
-> reachable from your VM as before; `ufw` on the target box now has an explicit
-> `allow 3200/tcp` rule, so 3200 connectivity should be reliable.
+> Target IP: `64.177.118.214` (Chicago — the real target; do not use the old
+> `45.32.146.113` Paris IP). Port 22 from your attacker VM's IP
+> (`64.177.113.13/32`) is explicitly denied at the Vultr cloud firewall
+> (`panacea-medical-lockdown`) — a connection timeout on 22 is the correct,
+> intended result of the demo, not a bug. Port 3200 is reachable from your VM;
+> `ufw` on the target box has an explicit `allow 3200/tcp` rule, so 3200
+> connectivity should be reliable.
 
 ## Re-provisioning notes
 
@@ -146,16 +136,13 @@ showtime if there's a spare minute.
 
 ### If this VM needs to be recreated from scratch
 
-This has happened once already (the original Paris instance was destroyed and
-replaced with this Chicago one, reusing the same VPC/firewall-group pattern —
-see "Decommissioned — Paris instance" above). Steps, assuming the VPC
-(`panacea-medical-vpc`) and firewall group (`panacea-medical-lockdown`)
-already exist and you just need a new instance attached to them (requires
-`vultr-cli`, configured with an API key that has this Vultr account's access —
-see `infra/zain/.env`, gitignored):
+Steps, assuming the VPC (`panacea-medical-vpc`) and firewall group
+(`panacea-medical-lockdown`) already exist and you just need a new instance
+attached to them (requires `vultr-cli`, configured with an API key that has
+this Vultr account's access — see `infra/zain/.env`, gitignored):
 
 ```bash
-# 1. Create the instance (Ubuntu 24.04 LTS x64 = os id 2284, confirmed via
+# 1. Create the instance (Ubuntu 24.04 LTS x64 = os id 2284; check with
 #    `vultr-cli os list`; adjust --label/--region if deploying elsewhere)
 vultr-cli instance create \
   --region="ord" \
