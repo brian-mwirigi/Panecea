@@ -3,6 +3,7 @@
 import json
 import hashlib
 import os
+import re
 import sys
 import uuid
 from datetime import datetime
@@ -273,6 +274,26 @@ async def run_pipeline(
             memo_text=contract_b.memo_text,
         )
 
+    # Safety net: if the agent didn't call check_cve this run (Nemotron is
+    # non-deterministic about tool use), run the CVE lookup deterministically so
+    # the document-grounded CVE cross-check is never silently skipped.
+    if not tool_evidence["cve"].strip():
+        try:
+            tool_evidence["cve"] = await query_cve(
+                contract_a.device_model, contract_a.firmware_version
+            )
+            await _emit("\n[CVE] Deterministic CVE cross-check against Vultr collection completed.\n")
+        except VultrVectorStoreError as exc:
+            await _emit(f"\n[CVE WARN] CVE cross-check unavailable ({exc}).\n")
+
+    # Ground cve_flagged in the actual check_cve result. Nemotron sometimes calls
+    # the CVE tool, gets a real hit, but still reports NONE — so if the tool
+    # surfaced a genuine CVE, trust the retrieved evidence and never drop it.
+    evidence_cve = _cve_id_from_evidence(tool_evidence["cve"])
+    if evidence_cve and (not contract_b.cve_flagged or contract_b.cve_flagged.strip().upper() == "NONE"):
+        contract_b = contract_b.model_copy(update={"cve_flagged": evidence_cve})
+        await _emit(f"\n[CVE] Grounded CVE from Vultr collection: {evidence_cve}\n")
+
     # ------------------------------------------------------------------
     # Feature 1: Real confidence from reasoning depth AND evidence grounding.
     # Short decisive reasoning + every rule backed by evidence → high confidence.
@@ -411,17 +432,26 @@ async def _tool_executor(tool_name: str, arguments: dict) -> str:
     This is the bridge between the LLM and the actual tool implementations.
     """
     if tool_name == "retrieve_document":
-        return await retrieve_document(
-            query=arguments.get("query", ""),
-            device_model=arguments.get("device_model", ""),
-            top_k=arguments.get("top_k", 3),
-        )
+        # Non-fatal: a Vector Store hiccup should degrade the answer, not 500 the run.
+        try:
+            return await retrieve_document(
+                query=arguments.get("query", ""),
+                device_model=arguments.get("device_model", ""),
+                top_k=arguments.get("top_k", 3),
+            )
+        except VultrVectorStoreError as exc:
+            return f"NO_DOCUMENT_EVIDENCE: retrieval unavailable ({exc})."
 
     if tool_name == "check_cve":
-        return await query_cve(
-            device_model=arguments.get("device_model", ""),
-            firmware_version=arguments.get("firmware_version", ""),
-        )
+        # Non-fatal: if the CVE collection is unreachable, report NONE so the
+        # agent still produces a policy instead of crashing the whole run.
+        try:
+            return await query_cve(
+                device_model=arguments.get("device_model", ""),
+                firmware_version=arguments.get("firmware_version", ""),
+            )
+        except VultrVectorStoreError as exc:
+            return f'{{"cve_id": "NONE", "note": "CVE lookup unavailable ({exc})"}}'
 
     if tool_name == "apply_firewall_rule":
         return apply_firewall_rule(
@@ -521,6 +551,26 @@ def _confidence_explanation(
     cve_note = "; CVE evidence introduced additional uncertainty" if (cve_flagged and cve_flagged not in ("NONE", "")) else ""
     grounding_note = f"; {grounded}/{total} rules grounded in cited evidence" if total > 0 else ""
     return f"{depth}{cve_note}{grounding_note}"
+
+
+def _cve_id_from_evidence(cve_text: str) -> str:
+    """Extract the first real CVE id from the check_cve tool output, if any.
+
+    Prefers a CVE explicitly marked HIGH/CRITICAL severity so the demo surfaces
+    the most material finding; otherwise returns the first CVE id present.
+    """
+    if not cve_text:
+        return ""
+    ids = re.findall(r"CVE-\d{4}-\d{3,7}", cve_text)
+    if not ids:
+        return ""
+    for severity in ("CRITICAL", "HIGH"):
+        # Look for a CVE id appearing near a HIGH/CRITICAL severity marker.
+        for cid in ids:
+            window = cve_text[max(0, cve_text.find(cid) - 200): cve_text.find(cid) + 200]
+            if severity in window.upper():
+                return cid
+    return ids[0]
 
 
 def _detect_drift(device_model: str, contract_a: "ContractA") -> str | None:
