@@ -162,23 +162,58 @@ class VultrVectorStore:
         )
 
     async def ensure_collection(self) -> str:
-        """Return the configured collection, creating it by name when necessary."""
+        """Return the configured collection, creating it by name when necessary.
+
+        Concurrent callers (e.g. two device manuals ingested at the same time,
+        each with their own VultrVectorStore() instance and no pre-set
+        collection_id) can race to create the same named collection. Vultr's
+        API rejects the loser with a 422 "duplicate collection name" error
+        rather than idempotently returning the winner's ID. On that specific
+        conflict we re-resolve by name instead of failing, so concurrent
+        onboarding converges on one shared collection instead of one side
+        erroring out.
+        """
         if self.collection_id:
             return self.collection_id
 
-        response = await self._request("GET", self.base_url)
-        for collection in _records(response.json(), "collections", "vector_stores"):
-            if collection.get("name") == self.collection_name and collection.get("id"):
-                self.collection_id = str(collection["id"])
-                return self.collection_id
+        found = await self._find_by_name()
+        if found:
+            self.collection_id = found
+            return self.collection_id
 
-        response = await self._request(
-            "POST",
-            self.base_url,
-            json={"name": self.collection_name},
-        )
+        try:
+            response = await self._request(
+                "POST",
+                self.base_url,
+                json={"name": self.collection_name},
+            )
+        except VultrVectorStoreError as exc:
+            if "duplicate" not in str(exc).lower():
+                raise
+            # The winning create can still be in flight when our POST is
+            # rejected — a short retry window isn't enough under real
+            # contention, so this is deliberately generous (~7.5s worst case).
+            resolved = await self._find_by_name(retries=6)
+            if not resolved:
+                raise VultrVectorStoreError(
+                    f"Collection '{self.collection_name}' reported as a duplicate but could not "
+                    "be resolved by name — Vultr Vector Store listing may be lagging."
+                ) from exc
+            self.collection_id = resolved
+            return self.collection_id
+
         self.collection_id = _response_id(response.json())
         return self.collection_id
+
+    async def _find_by_name(self, retries: int = 1) -> str | None:
+        for attempt in range(retries):
+            if attempt:
+                await asyncio.sleep(0.25 * (2 ** (attempt - 1)))
+            response = await self._request("GET", self.base_url)
+            for collection in _records(response.json(), "collections", "vector_stores"):
+                if collection.get("name") == self.collection_name and collection.get("id"):
+                    return str(collection["id"])
+        return None
 
     async def add_item(self, collection_id: str, content: str, description: str) -> str:
         # auto_chunk lets Vultr split content that exceeds the embedder's max

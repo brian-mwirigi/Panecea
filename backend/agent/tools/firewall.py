@@ -88,3 +88,11 @@ def get_active_policy(device_id: str) -> ContractB | None:
 def get_enforcement_result(device_id: str) -> dict | None:
     """Returns the latest live Vultr enforcement receipt for a VPC."""
     return _enforcement_results.get(device_id)
+
+
+def restore_active_policy(vpc_id: str, policy: ContractB, enforcement: dict) -> None:
+    """Rehydrates the in-memory caches from Vultr Managed Database after a
+    restart, so DELETE /api/v1/policy/{device_id} can find leases that were
+    already active before this process started."""
+    _active_policies[vpc_id] = policy
+    _enforcement_results[vpc_id] = enforcement

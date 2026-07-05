@@ -99,3 +99,12 @@ class VultrObjectStorage:
             ContentType="text/plain",
         )
         return key, evidence_hash
+
+    def presigned_url(self, key: str, expires_in: int = 300) -> str:
+        """Short-lived, read-only URL into the evidence bucket — lets a
+        compliance reviewer fetch one sealed bundle without bucket access."""
+        return self._s3().generate_presigned_url(
+            "get_object",
+            Params={"Bucket": self.evidence_bucket, "Key": key},
+            ExpiresIn=expires_in,
+        )

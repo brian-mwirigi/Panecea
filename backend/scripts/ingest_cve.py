@@ -12,6 +12,10 @@ from pathlib import Path
 BACKEND_ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(BACKEND_ROOT))
 
+from dotenv import load_dotenv
+
+load_dotenv(BACKEND_ROOT / ".env")
+
 from services.vultr_vector import VultrVectorStore
 
 
