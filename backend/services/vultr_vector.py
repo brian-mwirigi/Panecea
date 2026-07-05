@@ -349,12 +349,26 @@ async def query_cve(device_model: str, firmware_version: str) -> str:
     collection_id = os.getenv("VULTR_CVE_COLLECTION_ID", "")
     if not collection_id:
         raise VultrVectorStoreError("VULTR_CVE_COLLECTION_ID is required for CVE grounding")
-    query = (
-        f"Return known CVEs for medical device {device_model}, firmware {firmware_version}. "
-        "Return concise JSON with cve_id, severity, affected_versions, and mitigation. "
-        "Return cve_id NONE when the collection contains no matching evidence."
+    # The CVE collection may live under a different Vultr account than the manuals
+    # collection (it was ingested with the inference key). Allow a dedicated key so
+    # RAG can authenticate against whichever account owns the CVE collection.
+    cve_api_key = (
+        os.getenv("VULTR_CVE_API_KEY")
+        or os.getenv("VULTR_INFERENCE_API_KEY")
+        or None
     )
-    return await VultrVectorStore(collection_id=collection_id).rag_query(collection_id, query)
+    query = (
+        f"A {device_model} running software revision/firmware '{firmware_version}' is deployed on "
+        "the network. From the CVE collection, return every CVE whose affected_versions could apply "
+        "to this device. Treat revision letters as inclusive ranges (for example 'Rev B-M' includes "
+        "revisions C, D, ... L), and treat 'Version N and prior' as including earlier revisions. "
+        "Match on the device family even if the exact revision string is not listed verbatim. "
+        "Return a concise JSON array where each item has cve_id, severity, affected_versions, and "
+        "mitigation. Only return cve_id NONE if no CVE in the collection could plausibly apply."
+    )
+    return await VultrVectorStore(collection_id=collection_id, api_key=cve_api_key).rag_query(
+        collection_id, query
+    )
 
 
 async def retrieve_document(query: str, device_model: str, top_k: int = 3) -> str:
